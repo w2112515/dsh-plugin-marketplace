@@ -26,6 +26,7 @@ import {
 
 export const MARKETPLACE_SCANNER_VERSION = '2'
 export const DEFAULT_MARKETPLACE_TOPIC = 'dsh-plugin'
+const VALIDATION_CONCURRENCY = 12
 const STATE_SCHEMA_VERSION = 1
 const SEARCH_EPOCH = '1970-01-01T00:00:00.000Z'
 
@@ -545,16 +546,21 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
       || old.entry.repository.archived !== repository.archived)
   })
   const commits = await options.client.resolveDefaultBranchCommits(validation)
-  for (const repository of discovered.repositories) {
-    const old = previous.repositories[repository.id]
-    const mustValidate = old === undefined
-      || old.pushedAt !== repository.pushedAt
-      || old.validatorVersion !== MARKETPLACE_SCANNER_VERSION
-      || old.entry.validation.status !== 'valid'
-      || old.entry.repository.archived !== repository.archived
-    repositories[repository.id] = mustValidate
-      ? await validateRepository(options.client, repository, old, generatedAt, commits[repository.id] ?? null)
-      : { ...old, entry: refreshRepositoryMetadata(repository, old.entry) }
+  for (let offset = 0; offset < discovered.repositories.length; offset += VALIDATION_CONCURRENCY) {
+    const batch = discovered.repositories.slice(offset, offset + VALIDATION_CONCURRENCY)
+    const results = await Promise.all(batch.map(async (repository) => {
+      const old = previous.repositories[repository.id]
+      const mustValidate = old === undefined
+        || old.pushedAt !== repository.pushedAt
+        || old.validatorVersion !== MARKETPLACE_SCANNER_VERSION
+        || old.entry.validation.status !== 'valid'
+        || old.entry.repository.archived !== repository.archived
+      const state = mustValidate
+        ? await validateRepository(options.client, repository, old, generatedAt, commits[repository.id] ?? null)
+        : { ...old, entry: refreshRepositoryMetadata(repository, old.entry) }
+      return [repository.id, state] as const
+    }))
+    for (const [id, state] of results) repositories[id] = state
   }
   const entries = Object.values(repositories)
     .map(state => state.entry)

@@ -129,6 +129,32 @@ describe('plugin marketplace scanner', () => {
     expect(JSON.parse(await readFile(files.outputPath, 'utf8'))).toEqual(catalog)
   })
 
+  it('validates repositories with bounded concurrency', async () => {
+    const files = await paths()
+    let active = 0
+    let peak = 0
+    const github = new FixtureGitHub(Array.from({ length: 20 }, (_, index) => repository(index + 1, `repo-${String(index + 1)}`)))
+    const originalGetContent = github.getContent.bind(github)
+    github.getContent = async (...args) => {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise(resolve => setTimeout(resolve, 1))
+      try {
+        return await originalGetContent(...args)
+      } finally {
+        active -= 1
+      }
+    }
+    await runMarketplaceScan({
+      client: github,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(12)
+  })
+
   it('reuses valid state, retries invalid entries, and accepts ETag 304 after a push', async () => {
     const files = await paths()
     const repositories = [repository(1, 'valid'), repository(3, 'invalid')]
