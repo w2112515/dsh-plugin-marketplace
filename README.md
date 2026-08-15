@@ -135,5 +135,5 @@ pnpm pack --dry-run
 ## Links
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — the host project
-- [DSH Essentials](https://github.com/w2112515/dsh-essentials-pack) — the curated starter solution pack
+- [DSH Category Star Leaders](https://github.com/w2112515/dsh-essentials-pack) — a solution pack listing each category's highest-starred catalog entry (mechanical, snapshot-dated)
 - [linux.do](https://linux.do) — 新的理想型社区（友链）

@@ -135,5 +135,5 @@ pnpm pack --dry-run
 ## 友情链接
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)——宿主项目
-- [DSH Essentials](https://github.com/w2112515/dsh-essentials-pack)——策展起手整合包
+- [DSH 分类星数榜首](https://github.com/w2112515/dsh-essentials-pack)——按机械规则收录各分类 star 数最高条目的整合包（标注快照日期）
 - [linux.do](https://linux.do)——新的理想型社区（友链）
