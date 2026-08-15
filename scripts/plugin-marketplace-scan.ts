@@ -24,7 +24,7 @@ import {
   type GitHubSearchWindow,
 } from './plugin-marketplace-github.ts'
 
-export const MARKETPLACE_SCANNER_VERSION = '4'
+export const MARKETPLACE_SCANNER_VERSION = '5'
 export const DEFAULT_MARKETPLACE_TOPIC = 'dsh-plugin'
 const VALIDATION_CONCURRENCY = 12
 const STATE_SCHEMA_VERSION = 5
