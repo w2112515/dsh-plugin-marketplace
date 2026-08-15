@@ -10,7 +10,7 @@ DSH Plugin Marketplace is an **out-of-tree, installable DSH bundle** that adds a
 
 At a glance:
 
-- **1,900+ plugins** discovered by a daily scan of every GitHub repository carrying the `dsh-plugin` topic — no GitHub account or token needed to browse.
+- **2,200+ plugins** discovered by a daily scan of every GitHub repository carrying the `dsh-plugin` topic — no GitHub account or token needed to browse.
 - **Evidence-based install eligibility**: the scanner proves which install targets exist at each plugin's pinned commit, so "one-click" means *proven installable*, not *probably fine*.
 - **Consent-gated scripts**: install scripts are shown verbatim and run only after explicit, per-install consent — never persisted, never bulk-approved.
 - **Curated solution packs** that install a coherent capability baseline in one reviewed action.
