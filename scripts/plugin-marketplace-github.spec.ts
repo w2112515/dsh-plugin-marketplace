@@ -111,4 +111,32 @@ describe('GitHubMarketplaceClient', () => {
     expect(commits['1']).toMatch(/^[0-9a-f]{40}$/)
     expect(Object.keys(commits)).toHaveLength(51)
   })
+
+  it('keeps valid batch neighbors when one repository has no default-branch commit', async () => {
+    const repositories: GitHubRepository[] = ['empty', 'valid'].map((name, index) => ({
+      id: String(index + 1),
+      fullName: `owner/${name}`,
+      url: `https://github.com/owner/${name}`,
+      defaultBranch: 'main',
+      archived: false,
+      description: null,
+      stars: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      pushedAt: '2026-01-02T00:00:00.000Z',
+      topics: ['dsh-plugin'],
+      owner: 'owner',
+      license: null,
+    }))
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        r0: { defaultBranchRef: null },
+        r1: { defaultBranchRef: { target: { oid: 'a'.repeat(40) } } },
+      },
+      errors: [{ message: 'Git Repository is empty.' }],
+    }))) as unknown as typeof fetch
+    const client = new GitHubMarketplaceClient({ token: 'project-token', fetchImpl })
+    await expect(client.resolveDefaultBranchCommits(repositories)).resolves.toEqual({
+      '2': 'a'.repeat(40),
+    })
+  })
 })

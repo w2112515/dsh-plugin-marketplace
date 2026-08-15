@@ -194,7 +194,7 @@ export class GitHubMarketplaceClient {
         'x-github-api-version': '2022-11-28',
       }, [], { method: 'POST', body: JSON.stringify({ query: `query { ${selections.join(' ')} }` }) })
       const body: unknown = await response.json()
-      if (!isRecord(body) || !isRecord(body.data) || Array.isArray(body.errors)) {
+      if (!isRecord(body) || !isRecord(body.data)) {
         throw new TypeError('GitHub GraphQL commit response is invalid')
       }
       for (const [index, repository] of batch.entries()) {
@@ -203,7 +203,9 @@ export class GitHubMarketplaceClient {
           || !isRecord(value.defaultBranchRef.target)
           || typeof value.defaultBranchRef.target.oid !== 'string'
           || !/^[0-9a-f]{40}$/i.test(value.defaultBranchRef.target.oid)) {
-          throw new TypeError(`GitHub default branch commit is unavailable for ${repository.fullName}`)
+          // Empty, deleted, or inaccessible repositories remain browse-only.
+          // One missing alias must not discard valid neighbors in the batch.
+          continue
         }
         commits[repository.id] = value.defaultBranchRef.target.oid.toLowerCase()
       }
