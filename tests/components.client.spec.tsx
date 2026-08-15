@@ -117,7 +117,7 @@ function renderTab(overrides: Partial<PluginMarketplaceSettingsTabProps> = {}) {
     packs: vi.fn(async () => packsModel()),
     packDetail: vi.fn(async () => ({ pack: null, items: [] })),
     plan: vi.fn(async () => ({ status: 'ready' as const, planId: 'plan-1' as never, blockCode: null, action: 'install' as const, profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0', sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['restart-required'] as const, requiresScripts: false, installScripts: null, expiresAt: null })),
-    execute: vi.fn(async () => ({ status: 'succeeded' as const, code: 'succeeded' as const, action: 'install' as const, profileName: 'web', packageName: '@example/weather-bundle', requiresRestart: true, rollback: 'not-needed' as const, snapshot: operationSnapshot })),
+    execute: vi.fn(async () => ({ status: 'succeeded' as const, code: 'succeeded' as const, action: 'install' as const, profileName: 'web', packageName: '@example/weather-bundle', requiresRestart: true, rollback: 'not-needed' as const, detail: null, snapshot: operationSnapshot })),
     activateTab: vi.fn(),
     t: translate as PluginMarketplaceSettingsTabProps['t'],
     ...overrides,
@@ -364,7 +364,7 @@ describe('PluginMarketplaceSettingsTab', () => {
     const failedExecute = vi.fn(async () => ({
       status: 'failed' as const, code: 'pnpm-failed' as const, action: 'install' as const,
       profileName: 'web', packageName: '@example/weather-bundle', requiresRestart: false,
-      rollback: 'succeeded' as const, snapshot: operationSnapshot,
+      rollback: 'succeeded' as const, detail: null, snapshot: operationSnapshot,
     }))
     const props = renderTab({
       bootstrap: vi.fn(async () => ({ list: listModel(1, 1), operations: operationSnapshot })),

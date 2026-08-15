@@ -484,5 +484,7 @@ export interface MarketplaceOperationResult {
   readonly packageName: string | null
   readonly requiresRestart: boolean
   readonly rollback: 'not-needed' | 'succeeded' | 'failed'
+  /** Bounded package-manager output tail on failure, so a bare code never strands the user. */
+  readonly detail: string | null
   readonly snapshot: MarketplaceOperationSnapshot
 }

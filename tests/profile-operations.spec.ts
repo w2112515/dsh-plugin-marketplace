@@ -94,7 +94,7 @@ describe('MarketplaceProfileOperations', () => {
         manifest.dependencies[entry.package.name!] = entry.source.ref
         await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
         await stageInstalledPackage(runtime.dir, catalog)
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
 
@@ -130,7 +130,7 @@ describe('MarketplaceProfileOperations', () => {
         manifest.dependencies[entry.package.name!] = entry.source.ref
         await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
         await stageInstalledPackage(runtime.dir, scripted)
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
 
@@ -183,7 +183,7 @@ describe('MarketplaceProfileOperations', () => {
           delete manifest.dependencies[entry.package.name!]
           await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
         }
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
 
@@ -209,15 +209,17 @@ describe('MarketplaceProfileOperations', () => {
         calls += 1
         if (calls === 1) {
           await writeFile(join(runtime.dir, 'package.json'), '{"corrupted":true}\n')
-          return { exitCode: 1, unavailable: false }
+          return { exitCode: 1, unavailable: false, output: 'ERR_PNPM_SOMETHING the exact stderr tail' }
         }
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
 
     const plan = operations.plan({ repositoryId: '123456', action: 'install' })
-    await expect(operations.execute({ planId: plan.planId! })).resolves.toMatchObject({
+    const result = await operations.execute({ planId: plan.planId! })
+    expect(result).toMatchObject({
       status: 'failed', code: 'pnpm-failed', rollback: 'succeeded',
+      detail: 'ERR_PNPM_SOMETHING the exact stderr tail',
     })
     expect(calls).toBe(2)
     expect(await readFile(join(runtime.dir, 'package.json'), 'utf8')).toBe(original)
@@ -235,7 +237,7 @@ describe('MarketplaceProfileOperations', () => {
       capabilities,
       runPnpm: async () => {
         calls += 1
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
 
@@ -286,7 +288,7 @@ describe('MarketplaceProfileOperations', () => {
         await stageInstalledPackage(runtime.dir, catalog)
       }
       await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
-      return { exitCode: 0, unavailable: false }
+      return { exitCode: 0, unavailable: false, output: null }
     }
     const operations = new MarketplaceProfileOperations({
       runtime,
@@ -340,7 +342,7 @@ describe('MarketplaceProfileOperations', () => {
       now: () => now,
       runPnpm: async () => {
         calls += 1
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
     const expired = operations.plan({ repositoryId: '123456', action: 'install' })
@@ -366,7 +368,7 @@ describe('MarketplaceProfileOperations', () => {
       capabilities: unavailable,
       runPnpm: async () => {
         calls += 1
-        return { exitCode: 0, unavailable: false }
+        return { exitCode: 0, unavailable: false, output: null }
       },
     })
     expect(operations.snapshot()).toMatchObject({ capabilities: unavailable, plugins: [], external: [] })

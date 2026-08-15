@@ -42,6 +42,8 @@ export interface MarketplaceProfileRuntime {
 interface CommandResult {
   readonly exitCode: number
   readonly unavailable: boolean
+  /** Trimmed tail of the process's stderr (stdout fallback), for failure diagnostics. */
+  readonly output: string | null
 }
 
 type RunPnpm = (
@@ -84,13 +86,22 @@ async function runPnpm(args: readonly string[], cwd: string, signal: AbortSignal
   return runPackageManager('pnpm', args, cwd, signal)
 }
 
+const MAX_FAILURE_OUTPUT_CHARS = 2_000
+
+/** Keep the diagnostic tail of a failed package-manager run, bounded and trimmed. */
+function outputTail(text: string | undefined): string | null {
+  const trimmed = text?.trim() ?? ''
+  if (trimmed.length === 0) return null
+  return trimmed.length > MAX_FAILURE_OUTPUT_CHARS ? trimmed.slice(-MAX_FAILURE_OUTPUT_CHARS) : trimmed
+}
+
 async function runPackageManager(
   manager: MarketplaceOperationCapabilities['packageManager'],
   args: readonly string[],
   cwd: string,
   signal: AbortSignal,
 ): Promise<CommandResult> {
-  if (manager === 'unavailable') return { exitCode: 1, unavailable: true }
+  if (manager === 'unavailable') return { exitCode: 1, unavailable: true, output: null }
   const command = manager === 'pnpm' ? 'pnpm' : 'corepack'
   const commandArgs = manager === 'pnpm' ? args : ['pnpm', ...args]
   try {
@@ -102,11 +113,16 @@ async function runPackageManager(
       forceKillAfterDelay: 5_000,
       maxBuffer: MAX_PROCESS_OUTPUT_BYTES,
     })
-    return { exitCode: result.exitCode ?? 1, unavailable: false }
+    return {
+      exitCode: result.exitCode ?? 1,
+      unavailable: false,
+      output: outputTail(result.stderr) ?? outputTail(result.stdout),
+    }
   } catch (error) {
     return {
       exitCode: 1,
       unavailable: (error as NodeJS.ErrnoException | null)?.code === 'ENOENT',
+      output: null,
     }
   }
 }
@@ -600,6 +616,7 @@ export class MarketplaceProfileOperations {
     code: Exclude<MarketplaceOperationResult['code'], 'succeeded'>,
     plan?: MarketplaceOperationPlan,
     rollback: MarketplaceOperationResult['rollback'] = 'not-needed',
+    detail: string | null = null,
   ): MarketplaceOperationResult {
     return {
       status: 'failed',
@@ -609,6 +626,7 @@ export class MarketplaceProfileOperations {
       packageName: plan?.packageName ?? null,
       requiresRestart: false,
       rollback,
+      detail,
       snapshot: this.snapshot(),
     }
   }
@@ -641,7 +659,7 @@ export class MarketplaceProfileOperations {
     }
     if (command.exitCode !== 0) {
       const rollback = await this.rollback(backups)
-      return this.failure(command.unavailable ? 'pnpm-unavailable' : 'pnpm-failed', plan, rollback)
+      return this.failure(command.unavailable ? 'pnpm-unavailable' : 'pnpm-failed', plan, rollback, command.output)
     }
     try {
       const manifest = readProfileManifest('dsh marketplace', this.options.runtime.dir)
@@ -703,6 +721,7 @@ export class MarketplaceProfileOperations {
       packageName,
       requiresRestart: true,
       rollback: 'not-needed',
+      detail: null,
       snapshot: this.snapshot(),
     }
   }
