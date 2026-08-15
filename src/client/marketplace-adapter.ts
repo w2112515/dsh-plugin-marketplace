@@ -15,6 +15,7 @@ import type {
   MarketplacePlanRequest,
   MarketplacePluginDetailResponse,
   MarketplacePluginSummary,
+  MarketplaceRatingCounts,
   MarketplaceRefreshResponse,
 } from '../types.ts'
 
@@ -64,6 +65,9 @@ export interface MarketplacePluginRowModel {
   readonly category: MarketplacePluginSummary['category']
   readonly installability: MarketplacePluginSummary['installability']
   readonly compatibility: MarketplacePluginSummary['compatibility']
+  readonly freshness: number
+  readonly rating: MarketplaceRatingCounts | null
+  readonly voteUrl: string | null
 }
 
 /** One selected detail with its full catalog evidence. */
@@ -92,6 +96,9 @@ export interface MarketplacePluginDetailModel {
   readonly riskSignals: MarketplaceCatalogEntry['riskSignals']
   readonly installScripts: Readonly<Record<string, string>> | null
   readonly sourceRef: string
+  readonly freshness: number
+  readonly rating: MarketplaceRatingCounts | null
+  readonly voteUrl: string | null
 }
 
 /** Host-owned one-page list and its freshness state. */
@@ -118,6 +125,9 @@ export function toPluginRowModel(entry: MarketplacePluginSummary): MarketplacePl
     category: entry.category,
     installability: entry.installability,
     compatibility: entry.compatibility,
+    freshness: entry.freshness,
+    rating: entry.rating,
+    voteUrl: entry.voteUrl,
   }
 }
 
@@ -153,6 +163,9 @@ export function toPluginDetailModel(response: MarketplacePluginDetailResponse): 
     riskSignals: entry.riskSignals,
     installScripts: entry.installScripts,
     sourceRef: entry.source.ref,
+    freshness: response.freshness ?? 0,
+    rating: response.rating,
+    voteUrl: response.voteUrl,
   }
 }
 

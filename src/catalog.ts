@@ -61,6 +61,13 @@ const entrySchema = z.object({
     'build-script',
   ])),
   installScripts: z.record(z.string(), z.string()).nullable().optional(),
+  rating: z.object({
+    up: z.number().int().nonnegative(),
+    down: z.number().int().nonnegative(),
+    upRecent: z.number().int().nonnegative(),
+    downRecent: z.number().int().nonnegative(),
+    commentId: z.number().int().positive(),
+  }).strict().nullable().optional(),
 }).strict()
 
 const packEntrySchema = z.object({
@@ -112,6 +119,9 @@ const catalogSchema = z.object({
   }).strict(),
   entries: z.array(entrySchema),
   packs: z.array(packEntrySchema).optional(),
+  ratings: z.object({
+    issueUrl: z.url(),
+  }).strict().nullable().optional(),
 }).strict()
 
 /** Stable catalog validation error suitable for mapping to a public error code. */
@@ -202,7 +212,8 @@ export function parseMarketplaceCatalogText(text: string): MarketplaceCatalogSna
   return {
     ...wire,
     summary: { ...wire.summary, packCount: wirePacks.length },
-    entries: wire.entries.map(entry => ({ ...entry, installScripts: entry.installScripts ?? null })),
+    entries: wire.entries.map(entry => ({ ...entry, installScripts: entry.installScripts ?? null, rating: entry.rating ?? null })),
     packs: wirePacks,
+    ratings: wire.ratings ?? null,
   } as MarketplaceCatalogSnapshot
 }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type {
+  GitHubCommentRef,
   GitHubContentResult,
   GitHubRepository,
   GitHubSearchPage,
@@ -43,6 +44,14 @@ function packRepository(id: number, name: string, overrides: Partial<GitHubRepos
   return repository(id, name, { topics: [DEFAULT_MARKETPLACE_TOPIC, MARKETPLACE_PACK_TOPIC], ...overrides })
 }
 
+/** Shared in-memory ratings issue so multiple scan runs meet the same ballot boxes. */
+class RatingsStore {
+  readonly comments: GitHubCommentRef[] = []
+  nextCommentId = 1000
+  readonly counts = new Map<number, { up: number; down: number }>()
+  readonly reactions = new Map<number, { content: 'THUMBS_UP' | 'THUMBS_DOWN'; createdAt: string }[]>()
+}
+
 class FixtureGitHub implements MarketplaceGitHubReader {
   readonly contentCalls: string[] = []
   readonly treeCalls: string[] = []
@@ -54,8 +63,12 @@ class FixtureGitHub implements MarketplaceGitHubReader {
   readonly failingIds = new Set<string>()
   readonly topicWithdrawnIds = new Set<string>()
   readonly pushedAtOverrides = new Map<string, string>()
+  ratingsUnavailable = false
 
-  constructor(readonly repositories: readonly GitHubRepository[]) {}
+  constructor(
+    readonly repositories: readonly GitHubRepository[],
+    readonly ratingsStore = new RatingsStore(),
+  ) {}
 
   async searchRepositories(_topic: string, _window: GitHubSearchWindow, page: number): Promise<GitHubSearchPage> {
     const visible = this.repositories.filter(item => !this.omittedFromSearch.has(item.id))
@@ -82,6 +95,38 @@ class FixtureGitHub implements MarketplaceGitHubReader {
     repositories: readonly GitHubRepository[],
   ): Promise<Readonly<Record<string, string>>> {
     return Object.fromEntries(repositories.map(item => [item.id, item.id.padStart(40, '0')]))
+  }
+
+  async findOrCreateIssue(): Promise<{ number: number; url: string }> {
+    if (this.ratingsUnavailable) throw new Error('ratings backend down')
+    return { number: 7, url: 'https://github.com/fixture/marketplace/issues/7' }
+  }
+
+  async listIssueComments(): Promise<readonly GitHubCommentRef[]> {
+    return this.ratingsStore.comments
+  }
+
+  async createIssueComment(_host: string, _issue: number, body: string): Promise<GitHubCommentRef> {
+    const created = { id: this.ratingsStore.nextCommentId, body }
+    this.ratingsStore.nextCommentId += 1
+    this.ratingsStore.comments.push(created)
+    return created
+  }
+
+  async updateIssueComment(_host: string, commentId: number, body: string): Promise<void> {
+    const index = this.ratingsStore.comments.findIndex(comment => comment.id === commentId)
+    if (index !== -1) this.ratingsStore.comments[index] = { id: commentId, body }
+  }
+
+  async listCommentReactionCounts(): Promise<readonly { commentId: number; up: number; down: number }[]> {
+    return [...this.ratingsStore.counts.entries()].map(([commentId, totals]) => ({ commentId, ...totals }))
+  }
+
+  async listCommentReactions(
+    _host: string,
+    commentId: number,
+  ): Promise<readonly { content: 'THUMBS_UP' | 'THUMBS_DOWN'; createdAt: string }[]> {
+    return this.ratingsStore.reactions.get(commentId) ?? []
   }
 
   /** The pinned commit's tree; repos named *-unshipped lack the built entry file. */
@@ -383,6 +428,12 @@ describe('plugin marketplace scanner', () => {
       async getTreePaths() { throw new Error('not reached') },
       async getRepositoryById() { return null },
       async resolveDefaultBranchCommits() { return {} },
+      async findOrCreateIssue() { throw new Error('not reached') },
+      async listIssueComments() { throw new Error('not reached') },
+      async createIssueComment() { throw new Error('not reached') },
+      async updateIssueComment() { throw new Error('not reached') },
+      async listCommentReactionCounts() { throw new Error('not reached') },
+      async listCommentReactions() { throw new Error('not reached') },
     }
     const catalog = await runMarketplaceScan({
       client,
@@ -410,6 +461,12 @@ describe('plugin marketplace scanner', () => {
       async getTreePaths() { throw new Error('not reached') },
       async getRepositoryById() { return null },
       async resolveDefaultBranchCommits() { return {} },
+      async findOrCreateIssue() { throw new Error('not reached') },
+      async listIssueComments() { throw new Error('not reached') },
+      async createIssueComment() { throw new Error('not reached') },
+      async updateIssueComment() { throw new Error('not reached') },
+      async listCommentReactionCounts() { throw new Error('not reached') },
+      async listCommentReactions() { throw new Error('not reached') },
     }
     const catalog = await runMarketplaceScan({
       client,
@@ -583,5 +640,111 @@ describe('plugin marketplace scanner', () => {
     expect(catalog.packs[0]?.repositoryId).toBe('1')
     expect(second.contentCalls.filter(call => call.includes('shapeshifter')))
       .toEqual(['fixture/shapeshifter/dsh.pack.json'])
+  })
+})
+
+describe('marketplace community ratings', () => {
+  it('opens one vote comment per entry and aggregates total and recent ballots', async () => {
+    const files = await paths()
+    const store = new RatingsStore()
+    const repositories = [repository(1, 'beloved'), repository(2, 'quiet')]
+    const first = await runMarketplaceScan({
+      client: new FixtureGitHub(repositories, store),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(first.ratings).toEqual({ issueUrl: 'https://github.com/fixture/marketplace/issues/7' })
+    expect(store.comments).toHaveLength(2)
+    expect(first.entries.every(entry => entry.rating !== null)).toBe(true)
+    const belovedComment = first.entries.find(entry => entry.repository.fullName === 'fixture/beloved')?.rating?.commentId
+    expect(belovedComment).toBeDefined()
+    // Ballots land on GitHub between scans; the next run aggregates them, and
+    // only the trailing 90 days count toward the recent window.
+    store.counts.set(belovedComment!, { up: 19, down: 1 })
+    store.reactions.set(belovedComment!, [
+      { content: 'THUMBS_UP', createdAt: '2026-08-10T00:00:00.000Z' },
+      { content: 'THUMBS_DOWN', createdAt: '2026-01-01T00:00:00.000Z' },
+    ])
+    const second = await runMarketplaceScan({
+      client: new FixtureGitHub(repositories, store),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    expect(store.comments).toHaveLength(2)
+    expect(second.entries.find(entry => entry.repository.fullName === 'fixture/beloved')?.rating)
+      .toEqual({ up: 19, down: 1, upRecent: 1, downRecent: 0, commentId: belovedComment })
+    expect(second.entries.find(entry => entry.repository.fullName === 'fixture/quiet')?.rating)
+      .toEqual({ up: 0, down: 0, upRecent: 0, downRecent: 0, commentId: expect.any(Number) as number })
+  })
+
+  it('caps vote-channel creation per run and backfills the long tail on later runs', async () => {
+    const files = await paths()
+    const store = new RatingsStore()
+    const repositories = Array.from({ length: 305 }, (_, index) => repository(index + 1, `plugin-${String(index + 1)}`))
+    const first = await runMarketplaceScan({
+      client: new FixtureGitHub(repositories, store),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(store.comments).toHaveLength(300)
+    expect(first.entries.filter(entry => entry.rating !== null)).toHaveLength(300)
+    const second = await runMarketplaceScan({
+      client: new FixtureGitHub(repositories, store),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    expect(store.comments).toHaveLength(305)
+    expect(second.entries.every(entry => entry.rating !== null)).toBe(true)
+  })
+
+  it('publishes the catalog without ratings when the vote backend fails', async () => {
+    const files = await paths()
+    const github = new FixtureGitHub([repository(1, 'valid')])
+    github.ratingsUnavailable = true
+    const catalog = await runMarketplaceScan({
+      client: github,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(catalog.summary.entryCount).toBe(1)
+    expect(catalog.ratings).toBeNull()
+    expect(catalog.entries[0]?.rating).toBeNull()
+  })
+
+  it('keeps a renamed plugin\'s ballot box and refreshes only its display text', async () => {
+    const files = await paths()
+    const store = new RatingsStore()
+    await runMarketplaceScan({
+      client: new FixtureGitHub([repository(1, 'old-name')], store),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(store.comments).toHaveLength(1)
+    const original = store.comments[0]!
+    expect(original.body).toContain('fixture/old-name')
+    const catalog = await runMarketplaceScan({
+      client: new FixtureGitHub([repository(1, 'new-name')], store),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ratingsRepository: 'fixture/marketplace',
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    expect(store.comments).toHaveLength(1)
+    expect(store.comments[0]?.id).toBe(original.id)
+    expect(store.comments[0]?.body).toContain('fixture/new-name')
+    expect(store.comments[0]?.body).toContain('dsh-marketplace-rating:1')
+    expect(catalog.entries[0]?.rating?.commentId).toBe(original.id)
   })
 })

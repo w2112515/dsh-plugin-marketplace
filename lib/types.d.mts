@@ -16,6 +16,21 @@ interface MarketplaceCatalogIntegrity {
   readonly algorithm: 'sha256';
   readonly digest: string;
 }
+/**
+ * Community rating aggregated from GitHub reactions on the plugin's vote
+ * comment (one comment per plugin under the marketplace ratings issue). Votes
+ * are GitHub-native: users react on github.com in their own session, so the
+ * client never phones home and every vote carries a real GitHub identity.
+ * `upRecent`/`downRecent` cover the trailing 90 days at scan time.
+ */
+interface MarketplaceEntryRating {
+  readonly up: number;
+  readonly down: number;
+  readonly upRecent: number;
+  readonly downRecent: number;
+  /** GitHub issue-comment database id; the vote anchor for this plugin. */
+  readonly commentId: number;
+}
 /** One discovered DSH bundle repository. */
 interface MarketplaceCatalogEntry {
   /** Stable GitHub repository id serialized as a decimal string. */
@@ -62,6 +77,11 @@ interface MarketplaceCatalogEntry {
    * after the user reviews and approves these exact strings.
    */
   readonly installScripts: Readonly<Record<string, string>> | null;
+  /**
+   * Community rating when the scanner has opened this entry's vote comment;
+   * null while the vote channel is still being rolled out to this entry.
+   */
+  readonly rating: MarketplaceEntryRating | null;
 }
 /** One plugin reference inside a solution pack, keyed by stable repository id. */
 interface MarketplacePackItem {
@@ -110,6 +130,13 @@ interface MarketplaceCatalogSnapshot {
   readonly summary: MarketplaceCatalogSummary;
   readonly entries: readonly MarketplaceCatalogEntry[];
   readonly packs: readonly MarketplacePackEntry[];
+  /**
+   * Home of the community vote thread, null when the scanner has not opened
+   * one. Vote URLs are composed host-side as `${issueUrl}#issuecomment-<id>`.
+   */
+  readonly ratings: {
+    readonly issueUrl: string;
+  } | null;
 }
 /** Host-side retrieval/cache failure codes safe to show to a Client. */
 type MarketplaceCatalogErrorCode = 'catalog-url-unconfigured' | 'cache-invalid' | 'network-error' | 'http-error' | 'payload-too-large' | 'catalog-invalid' | 'cache-write-failed' | 'service-disposed';
@@ -144,6 +171,13 @@ interface MarketplaceListRequest {
   readonly sort: MarketplaceSort;
   readonly page: number;
 }
+/** Community rating counts without the vote-anchor internals. */
+interface MarketplaceRatingCounts {
+  readonly up: number;
+  readonly down: number;
+  readonly upRecent: number;
+  readonly downRecent: number;
+}
 /** Compact catalog row sent to the browser; full scanner evidence is detail-only. */
 interface MarketplacePluginSummary {
   readonly repositoryId: string;
@@ -164,6 +198,12 @@ interface MarketplacePluginSummary {
   readonly installability: Exclude<MarketplaceInstallability, 'browse-only'>;
   readonly compatibility: MarketplaceCompatibility;
   readonly riskSignals: readonly MarketplaceRiskSignal[];
+  /** Maintenance freshness 0..1 at query time: 100% now, 50% at 1y, 0 at 3y. */
+  readonly freshness: number;
+  /** Community rating counts; null while this entry's vote channel is pending. */
+  readonly rating: MarketplaceRatingCounts | null;
+  /** Deep link to this entry's GitHub vote comment; null when rating is null. */
+  readonly voteUrl: string | null;
 }
 /** Counts are calculated before the installability and category segments are applied. */
 interface MarketplaceListCounts {
@@ -215,6 +255,12 @@ interface MarketplaceRefreshResponse {
 interface MarketplacePluginDetailResponse {
   readonly entry: MarketplaceCatalogEntry | null;
   readonly state: MarketplaceProfilePluginState | null;
+  /** Freshness at query time; null when the entry is missing. */
+  readonly freshness: number | null;
+  /** Community rating counts; null while the vote channel is pending. */
+  readonly rating: MarketplaceRatingCounts | null;
+  /** Deep link to the GitHub vote comment; null when rating is null. */
+  readonly voteUrl: string | null;
 }
 /**
  * Catalog-truth install composition of a pack's items. Shown on pack cards so
@@ -385,5 +431,5 @@ interface MarketplaceOperationResult {
   readonly snapshot: MarketplaceOperationSnapshot;
 }
 //#endregion
-export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePackComposition, MarketplacePackDetailResponse, MarketplacePackEntry, MarketplacePackItem, MarketplacePackItemStatus, MarketplacePackItemView, MarketplacePackListResponse, MarketplacePackSummary, MarketplacePackValidationCode, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
+export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceEntryRating, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePackComposition, MarketplacePackDetailResponse, MarketplacePackEntry, MarketplacePackItem, MarketplacePackItemStatus, MarketplacePackItemView, MarketplacePackListResponse, MarketplacePackSummary, MarketplacePackValidationCode, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRatingCounts, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
 //# sourceMappingURL=types.d.mts.map

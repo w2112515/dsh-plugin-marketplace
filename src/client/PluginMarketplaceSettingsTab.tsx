@@ -93,6 +93,36 @@ function canChangeProfile(profile: MarketplaceOperationSnapshot | null): boolean
   return profile !== null && profile.capabilities.profileWritable && profile.capabilities.packageManager !== 'unavailable'
 }
 
+/**
+ * Five-cell maintenance meter, each cell one fifth of the freshness score.
+ * Fill is continuous, not quantized: 73% renders three full cells, one at
+ * 65%, one empty — the meter shrinks exactly as much as the score does.
+ */
+function FreshnessMeter({ value, t }: { value: number; t: Translate }): ReactNode {
+  const clamped = Math.min(1, Math.max(0, value))
+  const percent = Math.round(clamped * 100)
+  return <span className={css.freshness} title={t('freshness.title', { percent })}>
+    <span className={css.freshnessCells} aria-hidden="true">
+      {[0, 1, 2, 3, 4].map(cell => {
+        // One-decimal rounding keeps 0.73 * 5 - 3 from rendering as 64.999…%.
+        const fill = Math.round(Math.min(1, Math.max(0, clamped * 5 - cell)) * 1000) / 10
+        return <span key={cell} className={css.freshnessCell}>
+          <span className={css.freshnessCellFill} style={{ width: `${String(fill)}%` }} />
+        </span>
+      })}
+    </span>
+    <span className={css.freshnessValue}>{t('freshness.value', { percent })}</span>
+  </span>
+}
+
+/** Community verdict chip for rows; rendered only at or above the ten-vote rule. */
+function RatingChip({ rating, t }: { rating: NonNullable<MarketplacePluginRowModel['rating']>; t: Translate }): ReactNode {
+  const total = rating.up + rating.down
+  if (total < 10) return null
+  const percent = Math.round((100 * rating.up) / total)
+  return <span className={css.ratingChip} title={t('rating.votes', { count: total })}>{t('rating.chip', { percent })}</span>
+}
+
 function isRestartPending(state: ProfilePluginState['state'] | undefined): boolean {
   return state === 'pending-install' || state === 'pending-update' || state === 'pending-removal'
 }
@@ -146,7 +176,7 @@ function PluginRow({ plugin, state, t, onOpen, onInstall, rowRef, canInstall }: 
           </span>
           <span className={css.rowPeople}>{t('row.publisher', { publisher: plugin.publisher })}{plugin.author && plugin.author !== plugin.publisher ? ` · ${t('row.author', { author: plugin.author })}` : ''} · {t('card.stars', { count: plugin.stars })}</span>
           {plugin.description ? <span className={css.rowDescription}>{plugin.description}</span> : null}
-          <span className={css.rowMeta}><span>{t('card.pushed', { time: formatTime(plugin.lastCodePushAt) })}</span><span>{t('card.published', { time: formatTime(plugin.repositoryCreatedAt) })}</span><span>{plugin.license ?? t('detail.license.missing')}</span></span>
+          <span className={css.rowMeta}><FreshnessMeter value={plugin.freshness} t={t} />{plugin.rating !== null ? <RatingChip rating={plugin.rating} t={t} /> : null}<span>{t('card.pushed', { time: formatTime(plugin.lastCodePushAt) })}</span><span>{t('card.published', { time: formatTime(plugin.repositoryCreatedAt) })}</span><span>{plugin.license ?? t('detail.license.missing')}</span></span>
         </span>
       </span>
     </button>
@@ -227,6 +257,30 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
   </aside>
 }
 
+/** Detail-page community rating: Steam-style overall and trailing-90-day lines. */
+function RatingSection({ plugin, t }: { plugin: MarketplacePluginDetailModel; t: Translate }): ReactNode {
+  const rating = plugin.rating
+  if (rating === null) {
+    return <section className={css.detailSection}><h4>{t('rating.title')}</h4><p>{t('rating.pending')}</p></section>
+  }
+  const line = (up: number, count: number): string => {
+    if (count === 0) return t('rating.none')
+    if (count < 10) return t('rating.insufficient', { count })
+    return `${t('rating.positive', { percent: Math.round((100 * up) / count) })} · ${t('rating.votes', { count })}`
+  }
+  return <section className={css.detailSection}>
+    <h4>{t('rating.title')}</h4>
+    <dl className={css.factList}>
+      <div><dt>{t('rating.overall')}</dt><dd>{line(rating.up, rating.up + rating.down)}</dd></div>
+      <div><dt>{t('rating.recent')}</dt><dd>{line(rating.upRecent, rating.upRecent + rating.downRecent)}</dd></div>
+    </dl>
+    <p className={css.ratingHint}>{t('rating.hint')}</p>
+    {plugin.voteUrl !== null
+      ? <a className={css.githubLink} href={plugin.voteUrl} target="_blank" rel="noreferrer noopener">{t('rating.vote')}<IconRightUpOutline14 aria-hidden="true" /></a>
+      : null}
+  </section>
+}
+
 function PluginDetail({ plugin, profile, t, onBack, planOperation, executeOperation, onSnapshot, activateTab, initialAction, onInitialActionConsumed }: {
   plugin: MarketplacePluginDetailModel
   profile: MarketplaceOperationSnapshot | null
@@ -257,7 +311,8 @@ function PluginDetail({ plugin, profile, t, onBack, planOperation, executeOperat
         <p className={css.detailPackage}>{plugin.packageName ?? plugin.repositoryFullName}{plugin.packageVersion ? ` · ${plugin.packageVersion}` : ''}</p>
       </header>
       {plugin.description ? <section className={css.detailSection}><h4>{t('detail.about')}</h4><p>{plugin.description}</p></section> : null}
-      <section className={css.detailSection}><h4>{t('detail.activity')}</h4><dl className={css.factList}><div><dt>{t('detail.stars.label')}</dt><dd>{t('card.stars', { count: plugin.stars })}</dd></div><div><dt>{t('detail.created')}</dt><dd>{formatTime(plugin.repositoryCreatedAt)}</dd></div><div><dt>{t('detail.pushed')}</dt><dd>{formatTime(plugin.lastCodePushAt)}</dd></div><div><dt>{t('detail.firstSeen')}</dt><dd>{formatTime(plugin.firstSeenAt)}</dd></div><div><dt>{t('detail.license')}</dt><dd>{plugin.license ?? t('detail.license.missing')}</dd></div></dl></section>
+      <section className={css.detailSection}><h4>{t('detail.activity')}</h4><dl className={css.factList}><div><dt>{t('freshness.label')}</dt><dd><FreshnessMeter value={plugin.freshness} t={t} /></dd></div><div><dt>{t('detail.stars.label')}</dt><dd>{t('card.stars', { count: plugin.stars })}</dd></div><div><dt>{t('detail.created')}</dt><dd>{formatTime(plugin.repositoryCreatedAt)}</dd></div><div><dt>{t('detail.pushed')}</dt><dd>{formatTime(plugin.lastCodePushAt)}</dd></div><div><dt>{t('detail.firstSeen')}</dt><dd>{formatTime(plugin.firstSeenAt)}</dd></div><div><dt>{t('detail.license')}</dt><dd>{plugin.license ?? t('detail.license.missing')}</dd></div></dl></section>
+      <RatingSection plugin={plugin} t={t} />
       <section className={css.detailSection}><h4>{t('detail.validation')}</h4><p>{t(`detail.validation.${plugin.validationStatus}` as PluginMarketplaceLocaleKey)}{plugin.validationMessage ? ` · ${plugin.validationMessage}` : ''}</p></section>
       <section className={css.detailSection}><h4>{t('detail.compatibility')}</h4><p>{t(`compatibility.${plugin.compatibility}` as PluginMarketplaceLocaleKey)}</p></section>
       <section className={css.detailSection}><h4>{t('detail.source')}</h4><p>{t('detail.source.git', { ref: plugin.sourceRef })}</p></section>

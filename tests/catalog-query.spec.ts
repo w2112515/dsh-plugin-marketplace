@@ -5,6 +5,7 @@ import {
   detailMarketplacePack,
   installedMarketplacePlugins,
   listMarketplacePacks,
+  marketplaceFreshness,
   queryMarketplaceCatalog,
 } from '../src/catalog-query.ts'
 import type { MarketplaceCatalogEntry, MarketplaceCatalogView, MarketplaceListRequest, MarketplaceOperationSnapshot, MarketplacePackEntry } from '../src/types.ts'
@@ -30,11 +31,16 @@ function entry(id: number, overrides: Partial<MarketplaceCatalogEntry> = {}): Ma
   }
 }
 
-function view(entries: readonly MarketplaceCatalogEntry[], packs: readonly MarketplacePackEntry[] = []): MarketplaceCatalogView {
+function view(
+  entries: readonly MarketplaceCatalogEntry[],
+  packs: readonly MarketplacePackEntry[] = [],
+  ratings: { readonly issueUrl: string } | null = null,
+): MarketplaceCatalogView {
   const catalog = catalogFixture({
     summary: { entryCount: entries.length, invalidEntryCount: 0, packCount: packs.length },
     entries,
     packs,
+    ratings,
   })
   return {
     status: entries.length === 0 ? 'empty' : 'ready',
@@ -82,7 +88,8 @@ describe('catalog query', () => {
     }).items.map(item => item.repositoryId)).toEqual(['2'])
   })
 
-  it('uses eligibility, activity, stars, and stable repository name for recommended order', () => {
+  it('orders recommended by trust tier, then freshness-weighted log-stars', () => {
+    const now = '2026-08-15T00:00:00.000Z'
     const oldPopular = entry(1, {
       stars: 10_000,
       lastCodePushAt: '2025-01-01T00:00:00.000Z',
@@ -90,8 +97,48 @@ describe('catalog query', () => {
     })
     const currentManual = entry(2, { stars: 100, installability: 'manual' })
     const currentOneClick = entry(3, { stars: 1, installability: 'one-click-eligible' })
-    expect(queryMarketplaceCatalog(view([oldPopular, currentManual, currentOneClick]), defaultRequest)
+    expect(queryMarketplaceCatalog(view([oldPopular, currentManual, currentOneClick]), defaultRequest, now)
       .items.map(item => item.repositoryId)).toEqual(['3', '2', '1'])
+  })
+
+  it('measures freshness as 100% now, 50% at one year, zero at three', () => {
+    const now = Date.parse('2026-08-15T00:00:00.000Z')
+    const at = (days: number) => new Date(now - days * 86_400_000).toISOString()
+    expect(marketplaceFreshness(at(0), now)).toBe(1)
+    expect(marketplaceFreshness(at(365.25 / 2), now)).toBeCloseTo(0.75, 5)
+    expect(marketplaceFreshness(at(365.25), now)).toBeCloseTo(0.5, 5)
+    expect(marketplaceFreshness(at(2 * 365.25), now)).toBeCloseTo(0.25, 5)
+    expect(marketplaceFreshness(at(3 * 365.25), now)).toBe(0)
+    expect(marketplaceFreshness(at(5 * 365.25), now)).toBe(0)
+  })
+
+  it('lets a fresh niche plugin outrank a stale star giant, and zeroes three-year silence', () => {
+    const now = '2026-08-15T00:00:00.000Z'
+    const freshNiche = entry(1, { stars: 3 })
+    const staleGiant = entry(2, { stars: 9000, lastCodePushAt: '2023-08-01T00:00:00.000Z' })
+    const aging = entry(3, { stars: 300, lastCodePushAt: '2025-08-15T00:00:00.000Z' })
+    expect(queryMarketplaceCatalog(view([staleGiant, aging, freshNiche]), defaultRequest, now)
+      .items.map(item => item.repositoryId)).toEqual(['3', '1', '2'])
+  })
+
+  it('adds a Wilson rating boost only at ten or more votes', () => {
+    const now = '2026-08-15T00:00:00.000Z'
+    const rated = entry(1, { stars: 0, rating: { up: 19, down: 1, upRecent: 4, downRecent: 0, commentId: 501 } })
+    const quiet = entry(2, { stars: 0, rating: { up: 9, down: 0, upRecent: 2, downRecent: 0, commentId: 502 } })
+    const plain = entry(3, { stars: 0 })
+    expect(queryMarketplaceCatalog(view([plain, quiet, rated]), defaultRequest, now)
+      .items.map(item => item.repositoryId)).toEqual(['1', '2', '3'])
+  })
+
+  it('exposes freshness, rating counts, and a vote deep link on summaries', () => {
+    const now = '2026-08-15T00:00:00.000Z'
+    const rated = entry(1, { rating: { up: 8, down: 2, upRecent: 3, downRecent: 1, commentId: 777 } })
+    const issueUrl = 'https://github.com/example/marketplace/issues/1'
+    const result = queryMarketplaceCatalog(view([rated], [], { issueUrl }), defaultRequest, now)
+    const item = result.items[0]!
+    expect(item.freshness).toBeCloseTo(1, 1)
+    expect(item.rating).toEqual({ up: 8, down: 2, upRecent: 3, downRecent: 1 })
+    expect(item.voteUrl).toBe(`${issueUrl}#issuecomment-777`)
   })
 
   it('returns detail only for admitted entries and attaches sparse profile state', () => {
@@ -111,7 +158,8 @@ describe('catalog query', () => {
     expect(detailMarketplaceEntry(view([admitted, rejected]), '1', states)).toMatchObject({
       entry: { repositoryId: '1' }, state: { state: 'active' },
     })
-    expect(detailMarketplaceEntry(view([admitted, rejected]), '2', states)).toEqual({ entry: null, state: null })
+    expect(detailMarketplaceEntry(view([admitted, rejected]), '2', states))
+      .toEqual({ entry: null, state: null, freshness: null, rating: null, voteUrl: null })
   })
 
   it('derives categories from declared topics first, then conservative tokens, else null', () => {

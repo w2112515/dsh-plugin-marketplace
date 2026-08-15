@@ -43,8 +43,10 @@ export function catalogFixture(overrides: Partial<MarketplaceCatalogSnapshot> = 
       installability: 'one-click-eligible',
       riskSignals: ['git-source'],
       installScripts: null,
+      rating: null,
     }],
     packs: [],
+    ratings: null,
     ...overrides,
   }
   return sealMarketplaceCatalog(catalog)

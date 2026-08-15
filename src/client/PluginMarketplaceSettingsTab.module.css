@@ -352,6 +352,51 @@
   line-height: 18px;
 }
 
+.freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.freshnessCells {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.freshnessCell {
+  width: 9px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--dsw-alias-bg-layer-3);
+  overflow: hidden;
+}
+
+.freshnessCellFill {
+  display: block;
+  height: 100%;
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.freshnessValue {
+  font-variant-numeric: tabular-nums;
+}
+
+.ratingChip {
+  flex: none;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.ratingHint {
+  margin: 6px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
 .relationChip {
   flex: none;
   border: 1px solid var(--dsw-alias-border-l2);

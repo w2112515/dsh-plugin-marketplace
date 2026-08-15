@@ -18,6 +18,8 @@ jobs:
     permissions:
       contents: read
       pages: read
+      # Opens and reconciles the community ratings issue (one vote comment per plugin).
+      issues: write
     steps:
       - uses: actions/checkout@v6
         with:

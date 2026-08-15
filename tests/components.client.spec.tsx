@@ -53,6 +53,7 @@ const detail: MarketplacePluginDetailModel = {
   category: 'tool',
   validationStatus: 'valid', validationMessage: null, compatibility: 'compatible', installability: 'one-click-eligible', riskSignals: [], sourceRef: 'git+https://example.test/weather.git#abc',
   installScripts: null,
+  freshness: 1, rating: null, voteUrl: null,
 }
 
 const rowItem = {
@@ -61,6 +62,7 @@ const rowItem = {
   description: 'Weather tools for DSH users who need reliable forecasts.', license: 'MIT', stars: 42,
   repositoryCreatedAt: '2026-01-01T00:00:00.000Z', lastCodePushAt: '2026-08-13T00:00:00.000Z', firstSeenAt: '2026-08-14T00:00:00.000Z',
   category: 'tool' as const, installability: 'one-click-eligible' as const, compatibility: 'compatible' as const,
+  freshness: 1, rating: null as { up: number; down: number; upRecent: number; downRecent: number } | null, voteUrl: null as string | null,
 }
 
 const summaryPlugin = {
@@ -70,6 +72,7 @@ const summaryPlugin = {
   description: rowItem.description, license: rowItem.license, stars: rowItem.stars,
   repositoryCreatedAt: rowItem.repositoryCreatedAt, lastCodePushAt: rowItem.lastCodePushAt, firstSeenAt: rowItem.firstSeenAt,
   category: rowItem.category, installability: rowItem.installability, compatibility: rowItem.compatibility, riskSignals: [],
+  freshness: 1, rating: null, voteUrl: null,
 }
 
 function listModel(page = 1, packsCount = 0): MarketplaceListModel {
@@ -231,6 +234,60 @@ describe('PluginMarketplaceSettingsTab', () => {
     await screen.findByText('Weather Bundle')
     expect((await screen.findByRole('alert')).textContent).toBe('Refresh failed; the current catalog was preserved.')
     expect(screen.getByText('Weather Bundle')).toBeTruthy()
+  })
+
+  it('renders the freshness meter as true proportion, not quantized cells', async () => {
+    const list = { ...listModel(), items: [{ ...rowItem, freshness: 0.73 }] }
+    renderTab({
+      bootstrap: vi.fn(async () => ({ list, operations: operationSnapshot })),
+      list: vi.fn(async () => list),
+    })
+    const meter = await screen.findByTitle(/Maintenance freshness 73%/)
+    expect(meter.textContent).toContain('73%')
+    // 73% = three full cells, one at 65%, one empty — never stepwise.
+    const fills = [...meter.querySelectorAll('span[style]')].map(node => (node as HTMLElement).style.width)
+    expect(fills).toEqual(['100%', '100%', '100%', '65%', '0%'])
+  })
+
+  it('shows the community verdict chip only at ten or more votes', async () => {
+    const rated = { ...rowItem, id: 'p-rated', name: 'Rated Plugin', rating: { up: 19, down: 1, upRecent: 4, downRecent: 0 } }
+    const quiet = { ...rowItem, id: 'p-quiet', name: 'Quiet Plugin', rating: { up: 9, down: 0, upRecent: 2, downRecent: 0 } }
+    const list = { ...listModel(), items: [rated, quiet] }
+    renderTab({
+      bootstrap: vi.fn(async () => ({ list, operations: operationSnapshot })),
+      list: vi.fn(async () => list),
+    })
+    await screen.findByText('Rated Plugin')
+    expect(screen.getByText('👍 95%')).toBeTruthy()
+    expect(screen.queryByText('👍 100%')).toBeNull()
+  })
+
+  it('shows Steam-style overall and recent rating lines with a GitHub vote link on detail', async () => {
+    const ratedDetail: MarketplacePluginDetailModel = {
+      ...detail,
+      rating: { up: 19, down: 1, upRecent: 8, downRecent: 2 },
+      voteUrl: 'https://github.com/example/marketplace/issues/7#issuecomment-777',
+    }
+    renderTab({ detail: vi.fn(async () => ratedDetail) })
+    await screen.findByText('Weather Bundle')
+    fireEvent.click(screen.getByRole('button', { name: /Weather Bundle/ }))
+    await screen.findByText('Community rating')
+    expect(screen.getByText('95% positive · 20 votes')).toBeTruthy()
+    expect(screen.getByText('80% positive · 10 votes')).toBeTruthy()
+    const link = screen.getByRole('link', { name: /Rate on GitHub/ })
+    expect(link.getAttribute('href')).toBe('https://github.com/example/marketplace/issues/7#issuecomment-777')
+  })
+
+  it('withholds a verdict below ten votes and explains a pending vote channel', async () => {
+    renderTab({
+      detail: vi.fn(async () => ({ ...detail, rating: { up: 4, down: 0, upRecent: 0, downRecent: 0 }, voteUrl: 'https://github.com/example/marketplace/issues/7#issuecomment-1' })),
+    })
+    await screen.findByText('Weather Bundle')
+    fireEvent.click(screen.getByRole('button', { name: /Weather Bundle/ }))
+    await screen.findByText('Community rating')
+    expect(screen.getByText('Too few votes (4/10) — no verdict yet')).toBeTruthy()
+    expect(screen.getByText('No votes yet')).toBeTruthy()
+    expect(screen.queryByText(/positive/)).toBeNull()
   })
 
   it('replaces the install action with a manual-instructions link for manual-only entries', async () => {

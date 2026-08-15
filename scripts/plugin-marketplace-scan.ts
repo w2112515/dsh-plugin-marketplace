@@ -12,6 +12,7 @@ import {
 import type {
   MarketplaceCatalogEntry,
   MarketplaceCatalogSnapshot,
+  MarketplaceEntryRating,
   MarketplacePackEntry,
   MarketplacePackValidationCode,
   MarketplaceRiskSignal,
@@ -21,13 +22,14 @@ import type {
 import * as yaml from 'js-yaml'
 import {
   GitHubMarketplaceClient,
+  type GitHubCommentRef,
   type GitHubContentResult,
   type GitHubRepository,
   type GitHubSearchPage,
   type GitHubSearchWindow,
 } from './plugin-marketplace-github.ts'
 
-export const MARKETPLACE_SCANNER_VERSION = '6'
+export const MARKETPLACE_SCANNER_VERSION = '7'
 export const DEFAULT_MARKETPLACE_TOPIC = 'dsh-plugin'
 /** A repository carrying this topic alongside dsh-plugin is a solution pack, not a bundle. */
 export const MARKETPLACE_PACK_TOPIC = 'dsh-plugin-pack'
@@ -36,6 +38,11 @@ const MAX_PACK_ITEMS = 50
 const VALIDATION_CONCURRENCY = 12
 const STATE_SCHEMA_VERSION = 6
 const SEARCH_EPOCH = '1970-01-01T00:00:00.000Z'
+/** Vote channels open for the most visible entries first; the long tail backfills over daily runs. */
+const MAX_RATING_COMMENTS_PER_RUN = 300
+const RATING_RECENT_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
+const RATING_COMMENT_MARKER = /<!--\s*dsh-marketplace-rating:(\d+)\s*-->/
+export const MARKETPLACE_RATINGS_ISSUE_TITLE = 'DSH plugin community ratings / 插件社区评分'
 
 /** Narrow seam used by deterministic scanner tests. */
 export interface MarketplaceGitHubReader {
@@ -44,6 +51,12 @@ export interface MarketplaceGitHubReader {
   getContent(fullName: string, path: string, ref: string, etag: string | null): Promise<GitHubContentResult>
   getTreePaths(fullName: string, ref: string): Promise<{ paths: ReadonlySet<string>; truncated: boolean }>
   resolveDefaultBranchCommits(repositories: readonly GitHubRepository[]): Promise<Readonly<Record<string, string>>>
+  findOrCreateIssue(hostRepository: string, title: string, body: string): Promise<{ number: number; url: string }>
+  listIssueComments(hostRepository: string, issueNumber: number): Promise<readonly GitHubCommentRef[]>
+  createIssueComment(hostRepository: string, issueNumber: number, body: string): Promise<GitHubCommentRef>
+  updateIssueComment(hostRepository: string, commentId: number, body: string): Promise<void>
+  listCommentReactionCounts(hostRepository: string, issueNumber: number): Promise<readonly { commentId: number; up: number; down: number }[]>
+  listCommentReactions(hostRepository: string, commentId: number): Promise<readonly { content: 'THUMBS_UP' | 'THUMBS_DOWN'; createdAt: string }[]>
 }
 
 interface PluginScanState {
@@ -91,6 +104,8 @@ interface ScanOptions {
   readonly outputPath: string
   readonly rejectedPath: string
   readonly statePath: string
+  /** owner/repo hosting the community ratings issue; ratings sync is skipped when absent. */
+  readonly ratingsRepository?: string
   readonly now?: () => Date
 }
 
@@ -404,6 +419,9 @@ function makeEntry(
     installability: installabilityFor(status, commitSha, metadata, oneClickEvidence),
     riskSignals: risks,
     installScripts: metadata.installScripts,
+    // Community votes attach at publication time from the ratings sync; a
+    // freshly scanned entry has no vote channel until then.
+    rating: null,
   }
 }
 
@@ -597,6 +615,7 @@ function parsePreviousEntry(value: unknown): MarketplaceCatalogEntry | null {
       },
       entries: [value as unknown as MarketplaceCatalogEntry],
       packs: [],
+      ratings: null,
     })
     return parseMarketplaceCatalogText(JSON.stringify(candidate)).entries[0] ?? null
   } catch {
@@ -620,6 +639,7 @@ function parsePreviousPack(value: unknown): MarketplacePackEntry | null {
       },
       entries: [],
       packs: [value as unknown as MarketplacePackEntry],
+      ratings: null,
     })
     return parseMarketplaceCatalogText(JSON.stringify(candidate)).packs[0] ?? null
   } catch {
@@ -1068,6 +1088,105 @@ function refreshStateMetadata(repository: GitHubRepository, old: RepositoryScanS
     : { ...old, entry: refreshRepositoryMetadata(repository, old.entry) }
 }
 
+/** Vote-comment text: a stable machine marker plus a human-facing current repo link. */
+function ratingCommentBody(entry: MarketplaceCatalogEntry): string {
+  return `<!-- dsh-marketplace-rating:${entry.repositoryId} -->\n`
+    + `### [${entry.repository.fullName}](${entry.repository.url})\n\n`
+    + 'Vote on this plugin with a 👍 or 👎 reaction on this comment — no text needed. '
+    + '用 👍 或 👎 表情为此插件评分，无需留言。\n'
+}
+
+const RATINGS_ISSUE_BODY = [
+  'One comment per catalog plugin. Vote with a 👍 or 👎 reaction on the plugin\'s comment — that reaction is your ballot.',
+  '每个插件一条评论：在对应评论上点 👍 或 👎 表情即完成评分。',
+  '',
+  '- Ballots are GitHub accounts, so every vote has a real identity. 每张票都对应真实 GitHub 账号。',
+  '- Scores publish with the next catalog scan; a verdict shows only at 10+ votes. 分数随下次目录扫描发布；满 10 票才显示结论。',
+  '- Please do not reply to vote comments; text replies are not ballots. 请勿回复评分评论，文字不计票。',
+].join('\n')
+
+interface RatingsSyncResult {
+  readonly issueUrl: string
+  readonly byRepositoryId: ReadonlyMap<string, MarketplaceEntryRating>
+}
+
+/**
+ * Open and reconcile the GitHub-native vote channel: one comment per published
+ * entry under the marketplace's ratings issue, then aggregate reaction ballots
+ * into total and trailing-90-day counts. The issue itself is the durable
+ * state — comment markers survive scanner restarts, and renames only refresh
+ * display text. Comment creation is capped per run so a first-time backlog
+ * drains over days instead of one rate-limit-busting burst.
+ */
+export async function syncMarketplaceRatings(
+  client: MarketplaceGitHubReader,
+  hostRepository: string,
+  entries: readonly MarketplaceCatalogEntry[],
+  nowMs: number,
+): Promise<RatingsSyncResult> {
+  const issue = await client.findOrCreateIssue(hostRepository, MARKETPLACE_RATINGS_ISSUE_TITLE, RATINGS_ISSUE_BODY)
+  const comments = await client.listIssueComments(hostRepository, issue.number)
+  const commentByRepositoryId = new Map<string, GitHubCommentRef>()
+  for (const comment of comments) {
+    const marker = RATING_COMMENT_MARKER.exec(comment.body)
+    if (marker?.[1] !== undefined && !commentByRepositoryId.has(marker[1])) {
+      commentByRepositoryId.set(marker[1], comment)
+    }
+  }
+  // Open missing vote channels for the most visible entries first: one-click
+  // installs are what users meet at the top of every list, stars break ties.
+  const missing = entries
+    .filter(entry => !commentByRepositoryId.has(entry.repositoryId))
+    .sort((left, right) => Number(right.installability === 'one-click-eligible')
+      - Number(left.installability === 'one-click-eligible')
+      || right.stars - left.stars
+      || left.repository.fullName.localeCompare(right.repository.fullName))
+  let writes = 0
+  for (const entry of missing) {
+    if (writes >= MAX_RATING_COMMENTS_PER_RUN) break
+    const created = await client.createIssueComment(hostRepository, issue.number, ratingCommentBody(entry))
+    commentByRepositoryId.set(entry.repositoryId, created)
+    writes += 1
+  }
+  // A renamed repository keeps its ballot box; only the display text catches up.
+  for (const entry of entries) {
+    if (writes >= MAX_RATING_COMMENTS_PER_RUN) break
+    const comment = commentByRepositoryId.get(entry.repositoryId)
+    if (comment !== undefined && !comment.body.includes(`](${entry.repository.url})`)) {
+      await client.updateIssueComment(hostRepository, comment.id, ratingCommentBody(entry))
+      writes += 1
+    }
+  }
+  const counts = new Map(
+    (await client.listCommentReactionCounts(hostRepository, issue.number))
+      .map(item => [item.commentId, item] as const),
+  )
+  const recentCutoff = nowMs - RATING_RECENT_WINDOW_MS
+  const byRepositoryId = new Map<string, MarketplaceEntryRating>()
+  for (const entry of entries) {
+    const comment = commentByRepositoryId.get(entry.repositoryId)
+    if (comment === undefined) continue
+    const total = counts.get(comment.id) ?? { up: 0, down: 0 }
+    let upRecent = 0
+    let downRecent = 0
+    if (total.up + total.down > 0) {
+      for (const reaction of await client.listCommentReactions(hostRepository, comment.id)) {
+        if (Date.parse(reaction.createdAt) < recentCutoff) continue
+        if (reaction.content === 'THUMBS_UP') upRecent += 1
+        else downRecent += 1
+      }
+    }
+    byRepositoryId.set(entry.repositoryId, {
+      up: total.up,
+      down: total.down,
+      upRecent,
+      downRecent,
+      commentId: comment.id,
+    })
+  }
+  return { issueUrl: issue.url, byRepositoryId }
+}
+
 /** Discover, incrementally validate, retain missed known repositories, and atomically publish one complete snapshot. */
 export async function runMarketplaceScan(options: ScanOptions): Promise<MarketplaceCatalogSnapshot> {
   const now = options.now?.() ?? new Date()
@@ -1147,6 +1266,18 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
   const packs = allPacks.filter(pack => pack.validation.status === 'valid' && !pack.repository.archived)
   const rejectedEntries = allEntries.filter(entry => entry.validation.status !== 'valid' || entry.repository.archived)
   const rejectedPacks = allPacks.filter(pack => pack.validation.status !== 'valid' || pack.repository.archived)
+  // Community votes are additive: a ratings-sync failure never blocks the catalog.
+  let ratings: { readonly issueUrl: string } | null = null
+  let ratedEntries = entries
+  if (options.ratingsRepository !== undefined) {
+    try {
+      const sync = await syncMarketplaceRatings(options.client, options.ratingsRepository, entries, now.getTime())
+      ratings = { issueUrl: sync.issueUrl }
+      ratedEntries = entries.map(entry => ({ ...entry, rating: sync.byRepositoryId.get(entry.repositoryId) ?? null }))
+    } catch {
+      ratings = null
+    }
+  }
   const catalog = sealMarketplaceCatalog({
     schemaVersion: 1,
     generatedAt,
@@ -1154,12 +1285,13 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
     topic: options.topic,
     integrity: { algorithm: 'sha256', digest: '' },
     summary: {
-      entryCount: entries.length,
+      entryCount: ratedEntries.length,
       invalidEntryCount: 0,
       packCount: packs.length,
     },
-    entries,
+    entries: ratedEntries,
     packs,
+    ratings,
   })
   parseMarketplaceCatalogText(JSON.stringify(catalog))
   const rejected = sealMarketplaceCatalog({
@@ -1175,6 +1307,7 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
     },
     entries: rejectedEntries,
     packs: rejectedPacks,
+    ratings: null,
   })
   parseMarketplaceCatalogText(JSON.stringify(rejected))
   const state: MarketplaceScannerState = {
@@ -1199,12 +1332,14 @@ async function main(): Promise<void> {
     },
   })
   const token = process.env.GITHUB_TOKEN ?? ''
+  const ratingsRepository = process.env.GITHUB_REPOSITORY
   const catalog = await runMarketplaceScan({
     client: new GitHubMarketplaceClient({ token }),
     topic: values.topic,
     outputPath: resolve(values.output),
     rejectedPath: resolve(values.rejected),
     statePath: resolve(values.state),
+    ...(ratingsRepository === undefined ? {} : { ratingsRepository }),
   })
   process.stdout.write(`Published ${String(catalog.summary.entryCount)} marketplace entries.\n`)
 }

@@ -36,6 +36,31 @@ export interface GitHubSearchPage {
   readonly repositories: readonly GitHubRepository[]
 }
 
+/** The marketplace-hosted vote thread. */
+export interface GitHubIssueRef {
+  readonly number: number
+  readonly url: string
+}
+
+/** One vote-target comment under the ratings issue. */
+export interface GitHubCommentRef {
+  readonly id: number
+  readonly body: string
+}
+
+/** Aggregated reaction totals for one comment; non-scoring reactions excluded. */
+export interface GitHubReactionCounts {
+  readonly commentId: number
+  readonly up: number
+  readonly down: number
+}
+
+/** One timestamped scoring reaction. */
+export interface GitHubReaction {
+  readonly content: 'THUMBS_UP' | 'THUMBS_DOWN'
+  readonly createdAt: string
+}
+
 /** Conditional content response. */
 export type GitHubContentResult =
   | { readonly status: 'ok'; readonly etag: string | null; readonly text: string }
@@ -215,19 +240,9 @@ export class GitHubMarketplaceClient {
         }
         return `r${String(index)}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { defaultBranchRef { target { ... on Commit { oid } } } }`
       })
-      const response = await this.requestWithRetry(`${GITHUB_API}/graphql`, {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${this.options.token}`,
-        'content-type': 'application/json',
-        'user-agent': 'deepseek-harness-plugin-marketplace-scanner',
-        'x-github-api-version': '2022-11-28',
-      }, [], { method: 'POST', body: JSON.stringify({ query: `query { ${selections.join(' ')} }` }) })
-      const body: unknown = await response.json()
-      if (!isRecord(body) || !isRecord(body.data)) {
-        throw new TypeError('GitHub GraphQL commit response is invalid')
-      }
+      const data = await this.graphql(`query { ${selections.join(' ')} }`)
       for (const [index, repository] of batch.entries()) {
-        const value = body.data[`r${String(index)}`]
+        const value = data[`r${String(index)}`]
         if (!isRecord(value) || !isRecord(value.defaultBranchRef)
           || !isRecord(value.defaultBranchRef.target)
           || typeof value.defaultBranchRef.target.oid !== 'string'
@@ -240,6 +255,178 @@ export class GitHubMarketplaceClient {
       }
     }
     return commits
+  }
+
+  /** Find the marketplace's ratings issue by exact title, creating it on first use. */
+  async findOrCreateIssue(hostRepository: string, title: string, body: string): Promise<GitHubIssueRef> {
+    const params = new URLSearchParams({
+      q: `repo:${hostRepository} type:issue in:title ${JSON.stringify(title)}`,
+      per_page: '10',
+    })
+    const found = await (await this.request(`/search/issues?${params.toString()}`)).json()
+    if (isRecord(found) && Array.isArray(found.items)) {
+      for (const item of found.items) {
+        if (isRecord(item) && item.title === title && typeof item.number === 'number'
+          && typeof item.html_url === 'string') {
+          return { number: item.number, url: item.html_url }
+        }
+      }
+    }
+    const encodedName = hostRepository.split('/').map(encodeURIComponent).join('/')
+    const response = await this.requestWithRetry(`${GITHUB_API}/repos/${encodedName}/issues`, {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${this.options.token}`,
+      'content-type': 'application/json',
+      'user-agent': 'deepseek-harness-plugin-marketplace-scanner',
+      'x-github-api-version': '2022-11-28',
+    }, [], { method: 'POST', body: JSON.stringify({ title, body }) })
+    const created: unknown = await response.json()
+    if (!isRecord(created) || typeof created.number !== 'number' || typeof created.html_url !== 'string') {
+      throw new TypeError('GitHub issue creation response is invalid')
+    }
+    return { number: created.number, url: created.html_url }
+  }
+
+  /** List every comment under one issue, paginating to completion. */
+  async listIssueComments(hostRepository: string, issueNumber: number): Promise<readonly GitHubCommentRef[]> {
+    const encodedName = hostRepository.split('/').map(encodeURIComponent).join('/')
+    const comments: GitHubCommentRef[] = []
+    for (let page = 1; ; page += 1) {
+      const response = await this.request(
+        `/repos/${encodedName}/issues/${String(issueNumber)}/comments?per_page=100&page=${String(page)}`,
+      )
+      const body: unknown = await response.json()
+      if (!Array.isArray(body)) throw new TypeError('GitHub issue comments response is invalid')
+      for (const item of body) {
+        if (isRecord(item) && typeof item.id === 'number' && typeof item.body === 'string') {
+          comments.push({ id: item.id, body: item.body })
+        }
+      }
+      if (body.length < 100) return comments
+    }
+  }
+
+  /** Add one vote-target comment under the ratings issue. */
+  async createIssueComment(hostRepository: string, issueNumber: number, body: string): Promise<GitHubCommentRef> {
+    const encodedName = hostRepository.split('/').map(encodeURIComponent).join('/')
+    const response = await this.requestWithRetry(
+      `${GITHUB_API}/repos/${encodedName}/issues/${String(issueNumber)}/comments`,
+      {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${this.options.token}`,
+        'content-type': 'application/json',
+        'user-agent': 'deepseek-harness-plugin-marketplace-scanner',
+        'x-github-api-version': '2022-11-28',
+      },
+      [],
+      { method: 'POST', body: JSON.stringify({ body }) },
+    )
+    const created: unknown = await response.json()
+    if (!isRecord(created) || typeof created.id !== 'number' || typeof created.body !== 'string') {
+      throw new TypeError('GitHub comment creation response is invalid')
+    }
+    return { id: created.id, body: created.body }
+  }
+
+  /** Refresh a vote comment's display text after a repository rename. */
+  async updateIssueComment(hostRepository: string, commentId: number, body: string): Promise<void> {
+    const encodedName = hostRepository.split('/').map(encodeURIComponent).join('/')
+    const response = await this.requestWithRetry(
+      `${GITHUB_API}/repos/${encodedName}/issues/comments/${String(commentId)}`,
+      {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${this.options.token}`,
+        'content-type': 'application/json',
+        'user-agent': 'deepseek-harness-plugin-marketplace-scanner',
+        'x-github-api-version': '2022-11-28',
+      },
+      [],
+      { method: 'PATCH', body: JSON.stringify({ body }) },
+    )
+    await response.body?.cancel()
+  }
+
+  /**
+   * Aggregate thumbs up/down totals for every comment under the ratings issue,
+   * flagging comments whose reaction list overflows one inline page.
+   */
+  async listCommentReactionCounts(hostRepository: string, issueNumber: number): Promise<readonly GitHubReactionCounts[]> {
+    const [owner, name, ...rest] = hostRepository.split('/')
+    if (owner === undefined || name === undefined || rest.length > 0) {
+      throw new TypeError(`GitHub repository name is invalid: ${hostRepository}`)
+    }
+    const counts: GitHubReactionCounts[] = []
+    let cursor: string | null = null
+    for (;;) {
+      const data = await this.graphql(
+        `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+          repository(owner: $owner, name: $name) {
+            issue(number: $number) {
+              comments(first: 100, after: $cursor) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  databaseId
+                  reactionGroups { content reactors { totalCount } }
+                }
+              }
+            }
+          }
+        }`,
+        { owner, name, number: issueNumber, cursor },
+      )
+      const issue = isRecord(data.repository) ? data.repository.issue : null
+      const comments = isRecord(issue) ? issue.comments : null
+      if (!isRecord(comments) || !Array.isArray(comments.nodes) || !isRecord(comments.pageInfo)) {
+        throw new TypeError('GitHub reaction counts response is invalid')
+      }
+      for (const node of comments.nodes) {
+        if (!isRecord(node) || typeof node.databaseId !== 'number' || !Array.isArray(node.reactionGroups)) continue
+        let up = 0
+        let down = 0
+        for (const group of node.reactionGroups) {
+          if (!isRecord(group) || !isRecord(group.reactors) || typeof group.reactors.totalCount !== 'number') continue
+          if (group.content === 'THUMBS_UP') up = group.reactors.totalCount
+          if (group.content === 'THUMBS_DOWN') down = group.reactors.totalCount
+        }
+        counts.push({ commentId: node.databaseId, up, down })
+      }
+      if (comments.pageInfo.hasNextPage !== true || typeof comments.pageInfo.endCursor !== 'string') return counts
+      cursor = comments.pageInfo.endCursor
+    }
+  }
+
+  /** Fetch timestamped scoring reactions for one comment via REST, paginating to completion. */
+  async listCommentReactions(hostRepository: string, commentId: number): Promise<readonly GitHubReaction[]> {
+    const encodedName = hostRepository.split('/').map(encodeURIComponent).join('/')
+    const reactions: GitHubReaction[] = []
+    for (let page = 1; ; page += 1) {
+      const response = await this.request(
+        `/repos/${encodedName}/issues/comments/${String(commentId)}/reactions?per_page=100&page=${String(page)}`,
+      )
+      const body: unknown = await response.json()
+      if (!Array.isArray(body)) throw new TypeError('GitHub comment reactions response is invalid')
+      for (const item of body) {
+        if (!isRecord(item) || typeof item.created_at !== 'string') continue
+        if (item.content === '+1') reactions.push({ content: 'THUMBS_UP', createdAt: item.created_at })
+        if (item.content === '-1') reactions.push({ content: 'THUMBS_DOWN', createdAt: item.created_at })
+      }
+      if (body.length < 100) return reactions
+    }
+  }
+
+  private async graphql(query: string, variables: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    const response = await this.requestWithRetry(`${GITHUB_API}/graphql`, {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${this.options.token}`,
+      'content-type': 'application/json',
+      'user-agent': 'deepseek-harness-plugin-marketplace-scanner',
+      'x-github-api-version': '2022-11-28',
+    }, [], { method: 'POST', body: JSON.stringify({ query, variables }) })
+    const body: unknown = await response.json()
+    if (!isRecord(body) || !isRecord(body.data)) {
+      throw new TypeError('GitHub GraphQL response is invalid')
+    }
+    return body.data
   }
 
   private async request(path: string, extraHeaders?: Record<string, string>, accepted: readonly number[] = []): Promise<Response> {

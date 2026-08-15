@@ -20,7 +20,50 @@ import type {
 } from './types.ts'
 
 export const MARKETPLACE_PAGE_SIZE = 50
-const ACTIVE_WINDOW_MS = 180 * 24 * 60 * 60 * 1000
+const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000
+/** A verdict is shown only at or above this many votes — Steam's own rule. */
+export const MARKETPLACE_RATING_MIN_VOTES = 10
+const RATING_BOOST_WEIGHT = 2
+
+/**
+ * Maintenance freshness of a repository, 0..1: just pushed is 100%, one year
+ * without updates is 50%, three years is zero. Piecewise linear so the curve
+ * reads exactly like its description; measured at query time, not scan time.
+ */
+export function marketplaceFreshness(lastCodePushAt: string, nowMs: number): number {
+  const years = (nowMs - Date.parse(lastCodePushAt)) / YEAR_MS
+  if (!Number.isFinite(years) || years <= 0) return 1
+  if (years < 1) return 1 - 0.5 * years
+  if (years < 3) return 0.75 - 0.25 * years
+  return 0
+}
+
+/** Wilson lower bound (95%) — two unprompted upvotes never outrank a proven record. */
+function wilsonLowerBound(up: number, total: number): number {
+  if (total === 0) return 0
+  const z = 1.96
+  const phat = up / total
+  const zz = z * z
+  const centre = phat + zz / (2 * total)
+  const margin = z * Math.sqrt((phat * (1 - phat) + zz / (4 * total)) / total)
+  return (centre - margin) / (1 + zz / total)
+}
+
+/**
+ * Recommended score inside one trust tier: freshness multiplies a log-star
+ * quality term (log compresses so star giants cannot crush fresh work), and a
+ * vote-gated Wilson rating boost adds independently — a universally loved but
+ * unmaintained plugin sinks low yet never falsely claims a fresh project's slot.
+ */
+function recommendedScore(entry: MarketplaceCatalogEntry, nowMs: number): number {
+  const quality = 1 + Math.log1p(entry.stars)
+  const rating = entry.rating
+  const total = rating === null ? 0 : rating.up + rating.down
+  const boost = rating !== null && total >= MARKETPLACE_RATING_MIN_VOTES
+    ? RATING_BOOST_WEIGHT * wilsonLowerBound(rating.up, total)
+    : 0
+  return marketplaceFreshness(entry.lastCodePushAt, nowMs) * quality + boost
+}
 
 /** Fixed taxonomy priority: the first matching category wins, one chip per row. */
 export const MARKETPLACE_CATEGORY_PRIORITY: readonly MarketplaceCategory[] = [
@@ -90,7 +133,7 @@ export function isPublicMarketplaceEntry(entry: MarketplaceCatalogEntry): boolea
     && (entry.installability === 'one-click-eligible' || entry.installability === 'manual')
 }
 
-function summary(entry: MarketplaceCatalogEntry): MarketplacePluginSummary {
+function summary(entry: MarketplaceCatalogEntry, nowMs: number, issueUrl: string | null): MarketplacePluginSummary {
   const separator = entry.repository.fullName.indexOf('/')
   return {
     repositoryId: entry.repositoryId,
@@ -111,6 +154,16 @@ function summary(entry: MarketplaceCatalogEntry): MarketplacePluginSummary {
     installability: entry.installability as MarketplacePluginSummary['installability'],
     compatibility: entry.compatibility,
     riskSignals: entry.riskSignals,
+    freshness: marketplaceFreshness(entry.lastCodePushAt, nowMs),
+    rating: entry.rating === null ? null : {
+      up: entry.rating.up,
+      down: entry.rating.down,
+      upRecent: entry.rating.upRecent,
+      downRecent: entry.rating.downRecent,
+    },
+    voteUrl: entry.rating === null || issueUrl === null
+      ? null
+      : `${issueUrl}#issuecomment-${String(entry.rating.commentId)}`,
   }
 }
 
@@ -151,14 +204,12 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'en')
 }
 
-function compareRecommended(left: MarketplaceCatalogEntry, right: MarketplaceCatalogEntry, generatedAt: string): number {
+function compareRecommended(left: MarketplaceCatalogEntry, right: MarketplaceCatalogEntry, nowMs: number): number {
   const installability = Number(right.installability === 'one-click-eligible')
     - Number(left.installability === 'one-click-eligible')
   if (installability !== 0) return installability
-  const cutoff = Date.parse(generatedAt) - ACTIVE_WINDOW_MS
-  const activity = Number(Date.parse(right.lastCodePushAt) >= cutoff) - Number(Date.parse(left.lastCodePushAt) >= cutoff)
-  if (activity !== 0) return activity
-  if (right.stars !== left.stars) return right.stars - left.stars
+  const score = recommendedScore(right, nowMs) - recommendedScore(left, nowMs)
+  if (score !== 0) return score
   const pushed = Date.parse(right.lastCodePushAt) - Date.parse(left.lastCodePushAt)
   if (pushed !== 0) return pushed
   return compareText(left.repository.fullName, right.repository.fullName)
@@ -168,21 +219,21 @@ function compareRanked(
   left: RankedEntry,
   right: RankedEntry,
   request: MarketplaceListRequest,
-  generatedAt: string,
+  nowMs: number,
 ): number {
   if (left.relevance !== right.relevance) return right.relevance - left.relevance
   switch (request.sort) {
     case 'stars':
       return right.entry.stars - left.entry.stars
-        || compareRecommended(left.entry, right.entry, generatedAt)
+        || compareRecommended(left.entry, right.entry, nowMs)
     case 'recently-updated':
       return Date.parse(right.entry.lastCodePushAt) - Date.parse(left.entry.lastCodePushAt)
-        || compareRecommended(left.entry, right.entry, generatedAt)
+        || compareRecommended(left.entry, right.entry, nowMs)
     case 'recently-added':
       return Date.parse(right.entry.firstSeenAt) - Date.parse(left.entry.firstSeenAt)
-        || compareRecommended(left.entry, right.entry, generatedAt)
+        || compareRecommended(left.entry, right.entry, nowMs)
     case 'recommended':
-      return compareRecommended(left.entry, right.entry, generatedAt)
+      return compareRecommended(left.entry, right.entry, nowMs)
   }
 }
 
@@ -190,7 +241,9 @@ function compareRanked(
 export function queryMarketplaceCatalog(
   view: MarketplaceCatalogView,
   request: MarketplaceListRequest,
+  now?: string,
 ): MarketplaceListResponse {
+  const nowMs = now === undefined ? Date.now() : Date.parse(now)
   const admitted = view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []
   const categorized = admitted.map(entry => ({ entry, category: deriveMarketplaceCategory(entry) }))
   const counts = {
@@ -211,7 +264,7 @@ export function queryMarketplaceCatalog(
     .filter(item => request.installability === 'all' || item.entry.installability === request.installability)
     .map(item => ({ entry: item.entry, relevance: relevance(item.entry, words) }))
     .filter(item => item.relevance >= 0)
-    .sort((left, right) => compareRanked(left, right, request, view.catalog?.generatedAt ?? '1970-01-01T00:00:00.000Z'))
+    .sort((left, right) => compareRanked(left, right, request, nowMs))
   const pageCount = selected.length === 0 ? 0 : Math.ceil(selected.length / MARKETPLACE_PAGE_SIZE)
   const page = pageCount === 0 ? 1 : Math.min(request.page, pageCount)
   const offset = (page - 1) * MARKETPLACE_PAGE_SIZE
@@ -226,7 +279,7 @@ export function queryMarketplaceCatalog(
     counts,
     page,
     pageCount,
-    items: selected.slice(offset, offset + MARKETPLACE_PAGE_SIZE).map(item => summary(item.entry)),
+    items: selected.slice(offset, offset + MARKETPLACE_PAGE_SIZE).map(item => summary(item.entry, nowMs, view.catalog?.ratings?.issueUrl ?? null)),
     error: view.error,
   }
 }
@@ -236,13 +289,27 @@ export function detailMarketplaceEntry(
   view: MarketplaceCatalogView,
   repositoryId: string,
   states: readonly MarketplaceProfilePluginState[],
+  now?: string,
 ): MarketplacePluginDetailResponse {
   const entry = view.catalog?.entries.find(candidate => (
     candidate.repositoryId === repositoryId && isPublicMarketplaceEntry(candidate)
   )) ?? null
+  if (entry === null) return { entry: null, state: null, freshness: null, rating: null, voteUrl: null }
+  const nowMs = now === undefined ? Date.now() : Date.parse(now)
+  const issueUrl = view.catalog?.ratings?.issueUrl ?? null
   return {
     entry,
-    state: entry === null ? null : states.find(candidate => candidate.repositoryId === repositoryId) ?? null,
+    state: states.find(candidate => candidate.repositoryId === repositoryId) ?? null,
+    freshness: marketplaceFreshness(entry.lastCodePushAt, nowMs),
+    rating: entry.rating === null ? null : {
+      up: entry.rating.up,
+      down: entry.rating.down,
+      upRecent: entry.rating.upRecent,
+      downRecent: entry.rating.downRecent,
+    },
+    voteUrl: entry.rating === null || issueUrl === null
+      ? null
+      : `${issueUrl}#issuecomment-${String(entry.rating.commentId)}`,
   }
 }
 
@@ -251,9 +318,11 @@ export function installedMarketplacePlugins(
   view: MarketplaceCatalogView,
   snapshot: MarketplaceOperationSnapshot,
 ): MarketplaceInstalledResponse {
+  const nowMs = Date.now()
+  const issueUrl = view.catalog?.ratings?.issueUrl ?? null
   const summaries = new Map<string, MarketplacePluginSummary>()
   for (const entry of view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []) {
-    summaries.set(entry.repositoryId, summary(entry))
+    summaries.set(entry.repositoryId, summary(entry, nowMs, issueUrl))
   }
   return {
     profileName: snapshot.profileName,
