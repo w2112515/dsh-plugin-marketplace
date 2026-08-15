@@ -294,12 +294,16 @@ describe('MarketplaceProfileOperations', () => {
   })
 
   it('collapses same-name catalog duplicates to the entry matching the installed source', async () => {
-    const runtime = await stageActiveProfile(catalogFixture())
+    const base = catalogFixture().entries[0]!
+    const runtime = await stageActiveProfile(
+      catalogFixture(),
+      `github:example/dsh-weather-bundle#${base.repository.commitSha!}`,
+    )
     const duplicate = {
-      ...catalogFixture().entries[0]!,
+      ...base,
       repositoryId: '999999',
-      repository: { ...catalogFixture().entries[0]!.repository, fullName: 'copy/dsh-weather-bundle' },
-      source: { ...catalogFixture().entries[0]!.source, ref: 'git+https://github.com/copy/dsh-weather-bundle.git#ffffffffffffffffffffffffffffffffffffffff' },
+      repository: { ...base.repository, fullName: 'copy/dsh-weather-bundle' },
+      source: { ...base.source, ref: 'git+https://github.com/copy/dsh-weather-bundle.git#ffffffffffffffffffffffffffffffffffffffff' },
     }
     const catalog = catalogFixture({ entries: [...catalogFixture().entries, duplicate], summary: { entryCount: 2, invalidEntryCount: 0 } })
     const operations = new MarketplaceProfileOperations({
@@ -311,6 +315,23 @@ describe('MarketplaceProfileOperations', () => {
     const snapshot = operations.snapshot()
     expect(snapshot.plugins).toHaveLength(1)
     expect(snapshot.plugins[0]?.repositoryId).toBe('123456')
+  })
+
+  it('keeps the installed plugin identity when the catalog commit lags behind the installed one', async () => {
+    const runtime = await stageActiveProfile(
+      catalogFixture(),
+      'github:example/dsh-weather-bundle#eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    )
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => catalogFixture(),
+      capabilities,
+      runPnpm: async () => { throw new Error('must not run') },
+    })
+    const snapshot = operations.snapshot()
+    expect(snapshot.plugins).toHaveLength(1)
+    expect(snapshot.plugins[0]?.repositoryId).toBe('123456')
+    expect(snapshot.plugins[0]?.updateAvailable).toBe(true)
   })
 
   it('blocks an unwritable profile before writing', async () => {

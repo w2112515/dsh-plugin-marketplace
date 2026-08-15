@@ -266,6 +266,21 @@ function isRestartPending(state: MarketplaceProfilePluginState['state']): boolea
   return state === 'pending-install' || state === 'pending-update' || state === 'pending-removal'
 }
 
+interface InstalledOrigin {
+  readonly fullName: string
+  readonly commitSha: string | null
+}
+
+/** Parse the GitHub origin out of an installed spec in either supported notation. */
+function installedOrigin(spec: string | null): InstalledOrigin | null {
+  if (spec === null) return null
+  const match = /^github:([\w.-]+\/[\w.-]+?)(?:#([0-9a-f]{40}))?$/i.exec(spec)
+    ?? /^git\+https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?:#([0-9a-f]{40}))?$/i.exec(spec)
+  const fullName = match?.[1]
+  if (fullName === undefined) return null
+  return { fullName: fullName.toLowerCase(), commitSha: match?.[2]?.toLowerCase() ?? null }
+}
+
 function marketplacePlanId(value: string): MarketplacePlanId {
   return value as MarketplacePlanId
 }
@@ -320,23 +335,26 @@ export class MarketplaceProfileOperations {
         activeAfterRestart: manifestBundles(manifest).includes(name),
       }))
     // A profile holds one spec per package name, so same-name catalog duplicates
-    // collapse into one row; the entry whose immutable source matches wins.
-    const byPackage = new Map<string, MarketplaceProfilePluginState>()
-    for (const state of catalog?.entries
-      .map(entry => pluginState(this.options.runtime, manifest, entry))
-      .filter(state => state.state !== 'not-installed') ?? []) {
+    // collapse into one row. The entry matching the installed origin wins —
+    // origin+commit beats origin alone beats alphabetical first — so the row
+    // never borrows another publisher's identity for your installation.
+    const byPackage = new Map<string, { state: MarketplaceProfilePluginState; rank: 0 | 1 | 2 }>()
+    for (const entry of catalog?.entries ?? []) {
+      const state = pluginState(this.options.runtime, manifest, entry)
+      if (state.state === 'not-installed') continue
       const key = state.packageName ?? state.repositoryId
+      const origin = installedOrigin(state.installedSpec)
+      const rank: 0 | 1 | 2 = origin !== null && origin.fullName === entry.repository.fullName.toLowerCase()
+        ? (origin.commitSha !== null && origin.commitSha === entry.repository.commitSha ? 2 : 1)
+        : 0
       const existing = byPackage.get(key)
-      if (existing === undefined
-        || (existing.installedSpec !== existing.catalogSpec && state.installedSpec === state.catalogSpec)) {
-        byPackage.set(key, state)
-      }
+      if (existing === undefined || rank > existing.rank) byPackage.set(key, { state, rank })
     }
     return {
       profileName: this.options.runtime.profileName,
       busy: this.busy,
       capabilities: this.options.capabilities,
-      plugins: [...byPackage.values()],
+      plugins: [...byPackage.values()].map(item => item.state),
       external,
     }
   }
