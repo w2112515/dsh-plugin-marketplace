@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { basename, relative } from 'node:path'
+import { basename, relative, resolve } from 'node:path'
 import { transform } from 'lightningcss'
 import { defineConfig, type UserConfig } from 'tsdown'
 
@@ -52,18 +52,22 @@ const client: UserConfig = {
     name: 'marketplace-css-modules',
     resolveId(source: string, importer: string | undefined) {
       if (!source.endsWith('.module.css') || importer === undefined) return null
-      return `${CSS_PREFIX}${new URL(source, `file:///${importer.replace(/\\/g, '/')}`).pathname}${CSS_SUFFIX}`
+      const pathname = new URL(source, `file:///${importer.replace(/\\/g, '/')}`).pathname
+      const absolute = process.platform === 'win32' && /^\/[A-Za-z]:/.test(pathname) ? pathname.slice(1) : pathname
+      // The virtual id lands in the bundle as a region comment, so it must be
+      // machine-independent: repo-relative, POSIX separators.
+      return `${CSS_PREFIX}${relative(process.cwd(), absolute).replace(/\\/g, '/')}${CSS_SUFFIX}`
     },
     async load(id: string) {
       if (!id.startsWith(CSS_PREFIX)) return null
-      const pathname = id.slice(CSS_PREFIX.length, -CSS_SUFFIX.length)
-      const file = process.platform === 'win32' && /^\/[A-Za-z]:/.test(pathname) ? pathname.slice(1) : pathname
+      // The id is already the repo-relative POSIX name; recover the file.
+      const stableName = id.slice(CSS_PREFIX.length, -CSS_SUFFIX.length)
+      const file = resolve(process.cwd(), stableName)
       this.addWatchFile(file)
       // lightningcss folds `filename` into the css-modules class hash, so an
       // absolute path would make the build machine-dependent and the tracked
       // lib/ output impossible to verify in CI. A repo-relative name keeps
       // class names stable on every machine.
-      const stableName = relative(process.cwd(), file).replace(/\\/g, '/')
       const result = transform({
         filename: stableName,
         code: await readFile(file),
