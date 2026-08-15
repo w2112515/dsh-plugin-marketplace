@@ -16,6 +16,7 @@ import type {
   MarketplacePluginRowModel,
 } from './marketplace-adapter.ts'
 import type { MarketplaceExternalPlugin, MarketplaceInstalledResponse, MarketplacePackDetailResponse, MarketplacePackListResponse } from '../types.ts'
+import { MARKETPLACE_CATEGORY_PRIORITY } from '../catalog-query.ts'
 import type { PluginMarketplaceLocaleKey } from './locales.ts'
 import css from './PluginMarketplaceSettingsTab.module.css'
 
@@ -632,18 +633,18 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const installedCount = (profile?.plugins.length ?? 0) + (profile?.external.length ?? 0)
   const categoryChips: readonly { value: CategoryFilter; label: string; count: number }[] = [
     { value: 'all', label: t('filter.all'), count: model.counts.all },
-    ...(['theme', 'ui', 'tool', 'memory'] as const)
+    ...(MARKETPLACE_CATEGORY_PRIORITY
       .map(value => ({ value: value as CategoryFilter, label: t(CATEGORY_KEYS[value]), count: model.counts.categories[value] }))
-      .filter(chip => chip.count > 0),
+      .filter(chip => chip.count > 0)),
     ...(model.counts.uncategorized > 0 ? [{ value: 'uncategorized' as CategoryFilter, label: t('category.uncategorized'), count: model.counts.uncategorized }] : []),
   ]
 
   const installedItems = installedModel?.items ?? []
   const installedChips: readonly { value: CategoryFilter; label: string; count: number }[] = [
     { value: 'all', label: t('filter.all'), count: installedItems.length + (installedModel?.external.length ?? 0) },
-    ...(['theme', 'ui', 'tool', 'memory'] as const)
+    ...(MARKETPLACE_CATEGORY_PRIORITY
       .map(value => ({ value: value as CategoryFilter, label: t(CATEGORY_KEYS[value]), count: installedItems.filter(item => installedCategory(item) === value).length }))
-      .filter(chip => chip.count > 0),
+      .filter(chip => chip.count > 0)),
   ]
   const visibleInstalled = sortInstalledItems(
     installedCategoryFilter === 'all' ? installedItems : installedItems.filter(item => installedCategory(item) === installedCategoryFilter),
