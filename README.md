@@ -10,9 +10,9 @@ DSH Plugin Marketplace 是一个 **仓外可安装的 DeepSeek Harness bundle**�
 - Host：下载并严格校验中央静态目录，维护 last-known-good 缓存，并拥有当前 profile 的安装审核与写入。
 - Client：通过现有 `settings.plugins.tab` Slot 提供检索、筛选、详情、风险判断和审核确认界面。
 - Host/Client 通道：包私有、同源的 `/api/plugin-marketplace` JSON API；不修改 DSH 的静态 Typert Remote 清单。
-- 目录生产：本仓库 GitHub Actions 每日扫描带 `dsh-plugin` topic 的仓库，遇到 GitHub Search 1,000 条上限时按创建时间窗口递归拆分。
+- 目录生产：本仓库 GitHub Actions 每日扫描带 `dsh-plugin` topic 的候选仓库，只有静态校验通过且未归档的 Bundle 才进入用户目录；拒绝项只保存在 workflow artifact。遇到 GitHub Search 1,000 条上限时按创建时间窗口递归拆分。
 - 用户侧 GitHub：普通用户不需要 GitHub 账号、Token 或 VPS；只有中央扫描 workflow 使用仓库自带的 `GITHUB_TOKEN`。
-- 安装安全：只允许目录中固定到 40 位 commit、静态校验通过、且不含 lifecycle/build scripts 的 bundle 进入一键安装；执行前先生成短期审核 plan，安装阶段强制 `--ignore-scripts`，失败恢复 profile manifest、lockfile 和 workspace 配置。
+- 安装安全：只允许目录中固定到 40 位 commit、静态校验与预构建入口证据通过、且不含 lifecycle/build scripts 的 bundle 进入自动安装；执行前先生成短期审核 plan，安装阶段强制 `--ignore-scripts`，失败恢复 profile manifest、lockfile 和 workspace 配置。
 
 原先的 workspace 集成方案已失效，完整历史保存在 [docs/legacy-workspace-plan.md](docs/legacy-workspace-plan.md)，不能再作为实现或发布依据。
 
@@ -40,11 +40,13 @@ dsh-plugin-marketplace/
 cd D:\Work\dsh-plugin-marketplace
 pnpm install --frozen-lockfile
 pnpm run build
-pnpm test
+pnpm run check
 pnpm pack --dry-run
 ```
 
 ## 安装到本机 DSH
+
+普通用户不需要 GitHub Token。自动安装需要 Host 能调用 `pnpm`；插件也会自动尝试 `corepack pnpm`。两者都不可用时，WebUI 会保持浏览能力并给出恢复提示，不会显示假成功。
 
 默认目录由本仓库的 GitHub Pages 提供。开发时可用环境变量临时覆盖：
 
@@ -88,6 +90,14 @@ bundle 插入的 row id 是 `plugin-marketplace`。用户可在 `$DSH_HOME/profi
 
 patch 对 `config` 是整体替换，不是深度合并，因此覆盖时必须写全所有字段。
 
+## 使用插件市场
+
+- 第一次打开且没有缓存时，页面会等待首次目录抓取，不需要再手动点击刷新。
+- 页面只显示静态校验通过的 DSH Bundle；GitHub topic 只是候选发现信号，普通仓库和 DSH 平台仓库不会进入用户列表。
+- 列表按 50 条分页，并在 Host 侧完成搜索、筛选和排序；浏览器不会下载或渲染整份目录。
+- “自动安装”会把固定 commit 安装到当前 Web profile 并加入 Bundle 层，成功后必须重启 DSH 才会启用。
+- “需手动安装”表示现有静态证据不足以安全执行；市场只展示来源和说明，不绕过构建脚本授权。
+
 ## MVP 完成条件
 
 只有同时满足以下证据才称为仓外 MVP 完成：
@@ -95,8 +105,9 @@ patch 对 `config` 是整体替换，不是深度合并，因此覆盖时必须�
 1. `package.json`/`cordis.patch.yml` 静态 bundle preflight 通过。
 2. 构建产物包含 Host、Client、类型和 patch，且不包含密钥、本地缓存或 DSH 源码副本。
 3. 精确 tarball 安装进隔离 `web` profile 后，`--dump-config` 能看到 `plugin-marketplace` layer 与 row。
-4. 从已安装产物启动 WebUI，插件市场 tab 可见；目录正常、不可用与缓存降级路径可观察。
-5. 安装操作必须经过 plan/review/execute；失败回滚和卸载路径得到验证。
+4. 从已安装产物启动 WebUI，插件市场 tab 可见；无缓存首开自动加载，缓存、离线和刷新失败路径可恢复。
+5. 用户目录只包含有效且未归档 Bundle，DSH root 等非 Bundle 候选只进入拒绝 artifact。
+6. 安装操作必须经过 capability preflight、plan/review/execute；成功明确要求重启，失败回滚和卸载路径得到验证。
 
 ## 非目标
 

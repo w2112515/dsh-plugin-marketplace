@@ -5,10 +5,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import {
+  bootstrapMarketplace,
+  detailMarketplace,
   executeMarketplaceOperation,
+  listMarketplace,
   planMarketplaceOperation,
-  readCatalogModel,
   readOperationSnapshot,
+  refreshMarketplace,
   type MarketplaceCatalogRemoteFace,
 } from './marketplace-adapter.ts'
 import { PluginMarketplaceSettingsTab, type PluginMarketplaceSettingsTabInjected } from './PluginMarketplaceSettingsTab.tsx'
@@ -42,8 +45,10 @@ async function apiCall<T>(method: string, params?: unknown): Promise<T> {
 }
 
 const remote: MarketplaceCatalogRemoteFace = {
-  snapshot: () => apiCall('snapshot'),
-  refresh: () => apiCall('refresh'),
+  bootstrap: request => apiCall('bootstrap', request),
+  list: request => apiCall('list', request),
+  detail: request => apiCall('detail', request),
+  refresh: request => apiCall('refresh', request),
   operationSnapshot: () => apiCall('operationSnapshot'),
   plan: request => apiCall('plan', request),
   execute: request => apiCall('execute', request),
@@ -62,8 +67,10 @@ export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'plugin-marketplace: dictionaries')
   const t = ctx.locale.bind(NS)
   const injected = (): PluginMarketplaceSettingsTabInjected => ({
-    snapshot: () => readCatalogModel(remote, 'snapshot'),
-    refresh: () => readCatalogModel(remote, 'refresh'),
+    bootstrap: request => bootstrapMarketplace(remote, request),
+    list: request => listMarketplace(remote, request),
+    detail: repositoryId => detailMarketplace(remote, repositoryId),
+    refresh: (request, currentDigest) => refreshMarketplace(remote, request, currentDigest),
     operationSnapshot: () => readOperationSnapshot(remote),
     plan: request => planMarketplaceOperation(remote, request),
     execute: planId => executeMarketplaceOperation(remote, planId),

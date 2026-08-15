@@ -119,6 +119,94 @@ export interface MarketplaceCatalogView {
   readonly error: MarketplaceCatalogError | null
 }
 
+/** Installability segment selected by the Marketplace browser. */
+export type MarketplaceInstallabilityFilter = 'all' | 'one-click-eligible' | 'manual'
+
+/** Stable user-facing ordering supported by the Host-owned catalog index. */
+export type MarketplaceSort = 'recommended' | 'stars' | 'recently-updated' | 'recently-added'
+
+/** Bounded Host-side Marketplace query. Page numbers are one-based. */
+export interface MarketplaceListRequest {
+  readonly query: string
+  readonly installability: MarketplaceInstallabilityFilter
+  readonly sort: MarketplaceSort
+  readonly page: number
+}
+
+/** Compact catalog row sent to the browser; full scanner evidence is detail-only. */
+export interface MarketplacePluginSummary {
+  readonly repositoryId: string
+  readonly name: string
+  readonly publisher: string
+  readonly author: string | null
+  readonly packageName: string | null
+  readonly packageVersion: string | null
+  readonly repositoryFullName: string
+  readonly repositoryUrl: string
+  readonly description: string | null
+  readonly license: string | null
+  readonly stars: number
+  readonly lastCodePushAt: string
+  readonly firstSeenAt: string
+  readonly installability: Exclude<MarketplaceInstallability, 'browse-only'>
+  readonly compatibility: MarketplaceCompatibility
+  readonly riskSignals: readonly MarketplaceRiskSignal[]
+}
+
+/** Counts are calculated before the installability segment is applied. */
+export interface MarketplaceListCounts {
+  readonly all: number
+  readonly oneClick: number
+  readonly manual: number
+}
+
+/** One bounded catalog page and the freshness facts that qualify it. */
+export interface MarketplaceListResponse {
+  readonly digest: string
+  readonly catalogStatus: MarketplaceCatalogView['status']
+  readonly source: MarketplaceCatalogView['source']
+  readonly stale: boolean
+  readonly generatedAt: string | null
+  readonly lastSuccessfulFetchAt: string | null
+  readonly total: number
+  readonly counts: MarketplaceListCounts
+  readonly page: number
+  readonly pageCount: number
+  readonly items: readonly MarketplacePluginSummary[]
+  readonly error: MarketplaceCatalogError | null
+}
+
+/** Host-qualified package-manager and profile-write capabilities. */
+export interface MarketplaceOperationCapabilities {
+  readonly packageManager: 'pnpm' | 'corepack-pnpm' | 'unavailable'
+  readonly profileWritable: boolean
+  readonly profileName: string
+  readonly message: string | null
+}
+
+/** First-load result: one page plus all current-profile operation truth. */
+export interface MarketplaceBootstrapResponse {
+  readonly list: MarketplaceListResponse
+  readonly capabilities: MarketplaceOperationCapabilities
+  readonly operations: MarketplaceOperationSnapshot
+}
+
+/** A refresh avoids retransmitting page rows when the catalog digest is unchanged. */
+export interface MarketplaceRefreshResponse {
+  readonly changed: boolean
+  readonly list: MarketplaceListResponse | null
+  readonly source: MarketplaceCatalogView['source']
+  readonly stale: boolean
+  readonly lastSuccessfulFetchAt: string | null
+  readonly error: MarketplaceCatalogError | null
+}
+
+/** Full scanner evidence and current-profile state requested for one detail view. */
+export interface MarketplacePluginDetailResponse {
+  readonly entry: MarketplaceCatalogEntry | null
+  readonly state: MarketplaceProfilePluginState | null
+}
+
 /** Opaque, short-lived identifier for one reviewed profile operation. */
 export type MarketplacePlanId = string & { readonly __marketplacePlanId: unique symbol }
 
@@ -139,10 +227,11 @@ export interface MarketplaceProfilePluginState {
   readonly updateAvailable: boolean
 }
 
-/** Snapshot of profile operations and catalog packages in the active Web profile. */
+/** Sparse snapshot of installed or restart-pending catalog packages in the active Web profile. */
 export interface MarketplaceOperationSnapshot {
   readonly profileName: string
   readonly busy: boolean
+  readonly capabilities: MarketplaceOperationCapabilities
   readonly plugins: readonly MarketplaceProfilePluginState[]
 }
 
@@ -160,6 +249,8 @@ export type MarketplacePlanBlockCode =
   | 'already-installed'
   | 'not-installed'
   | 'restart-required'
+  | 'package-manager-unavailable'
+  | 'profile-not-writable'
 
 /** Warning disclosed before the user confirms code installation or removal. */
 export type MarketplacePlanWarning =

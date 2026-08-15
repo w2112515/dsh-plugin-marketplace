@@ -1,8 +1,8 @@
 /** Transactional current-profile operations for reviewed marketplace entries. */
 
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { readFile, rm } from 'node:fs/promises'
+import { constants, readFileSync } from 'node:fs'
+import { access, readFile, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
   loadOverlayPatches,
@@ -11,12 +11,14 @@ import {
   type ProfileManifest,
 } from '@deepseek-ai/dsh-app-boot'
 import { writeFileAtomic } from './atomic-write.ts'
+import { isPublicMarketplaceEntry } from './catalog-query.ts'
 import { execa } from 'execa'
 import type {
   MarketplaceCatalogEntry,
   MarketplaceCatalogSnapshot,
   MarketplaceExecuteRequest,
   MarketplaceOperationPlan,
+  MarketplaceOperationCapabilities,
   MarketplaceOperationResult,
   MarketplaceOperationSnapshot,
   MarketplacePlanId,
@@ -50,6 +52,7 @@ type RunPnpm = (
 interface OperationManagerOptions {
   readonly runtime: MarketplaceProfileRuntime
   readonly catalog: () => MarketplaceCatalogSnapshot | null
+  readonly capabilities: MarketplaceOperationCapabilities
   readonly runPnpm?: RunPnpm
   readonly now?: () => number
 }
@@ -77,8 +80,20 @@ function sanitizedEnvironment(): Record<string, string> {
 }
 
 async function runPnpm(args: readonly string[], cwd: string, signal: AbortSignal): Promise<CommandResult> {
+  return runPackageManager('pnpm', args, cwd, signal)
+}
+
+async function runPackageManager(
+  manager: MarketplaceOperationCapabilities['packageManager'],
+  args: readonly string[],
+  cwd: string,
+  signal: AbortSignal,
+): Promise<CommandResult> {
+  if (manager === 'unavailable') return { exitCode: 1, unavailable: true }
+  const command = manager === 'pnpm' ? 'pnpm' : 'corepack'
+  const commandArgs = manager === 'pnpm' ? args : ['pnpm', ...args]
   try {
-    const result = await execa('pnpm', args, {
+    const result = await execa(command, commandArgs, {
       cwd,
       env: sanitizedEnvironment(),
       reject: false,
@@ -93,6 +108,56 @@ async function runPnpm(args: readonly string[], cwd: string, signal: AbortSignal
       unavailable: (error as NodeJS.ErrnoException | null)?.code === 'ENOENT',
     }
   }
+}
+
+type ProbePackageManager = (
+  command: 'pnpm' | 'corepack',
+  args: readonly string[],
+  cwd: string,
+) => Promise<boolean>
+
+async function probePackageManager(command: 'pnpm' | 'corepack', args: readonly string[], cwd: string): Promise<boolean> {
+  try {
+    const result = await execa(command, args, {
+      cwd,
+      env: sanitizedEnvironment(),
+      reject: false,
+      timeout: 10_000,
+      maxBuffer: MAX_PROCESS_OUTPUT_BYTES,
+    })
+    return result.exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+/** Preflight the exact current-profile authority before exposing an install action. */
+export async function detectMarketplaceOperationCapabilities(
+  runtime: MarketplaceProfileRuntime,
+  probe: ProbePackageManager = probePackageManager,
+  checkWritable: (path: string, mode: number) => Promise<void> = access,
+): Promise<MarketplaceOperationCapabilities> {
+  let profileWritable = true
+  try {
+    await Promise.all([
+      checkWritable(runtime.dir, constants.W_OK),
+      checkWritable(join(runtime.dir, 'package.json'), constants.W_OK),
+      checkWritable(join(runtime.dir, 'pnpm-workspace.yaml'), constants.W_OK),
+    ])
+  } catch {
+    profileWritable = false
+  }
+  const packageManager = await probe('pnpm', ['--version'], runtime.dir)
+    ? 'pnpm'
+    : await probe('corepack', ['pnpm', '--version'], runtime.dir)
+      ? 'corepack-pnpm'
+      : 'unavailable'
+  const message = !profileWritable
+    ? 'The current DSH profile is not writable.'
+    : packageManager === 'unavailable'
+      ? 'Neither pnpm nor Corepack pnpm is available. Install pnpm 11 or enable Corepack, then restart DSH.'
+      : null
+  return { packageManager, profileWritable, profileName: runtime.profileName, message }
 }
 
 async function backup(path: string): Promise<FileBackup> {
@@ -222,7 +287,11 @@ export class MarketplaceProfileOperations {
   private abort: AbortController | null = null
 
   constructor(private readonly options: OperationManagerOptions) {
-    this.runPnpm = options.runPnpm ?? runPnpm
+    this.runPnpm = options.runPnpm ?? ((args, cwd, signal) => (
+      options.capabilities.packageManager === 'pnpm'
+        ? runPnpm(args, cwd, signal)
+        : runPackageManager(options.capabilities.packageManager, args, cwd, signal)
+    ))
     this.now = options.now ?? Date.now
   }
 
@@ -236,7 +305,10 @@ export class MarketplaceProfileOperations {
     return {
       profileName: this.options.runtime.profileName,
       busy: this.busy,
-      plugins: catalog?.entries.map(entry => pluginState(this.options.runtime, manifest, entry)) ?? [],
+      capabilities: this.options.capabilities,
+      plugins: catalog?.entries
+        .map(entry => pluginState(this.options.runtime, manifest, entry))
+        .filter(state => state.state !== 'not-installed') ?? [],
     }
   }
 
@@ -247,12 +319,20 @@ export class MarketplaceProfileOperations {
    */
   plan(request: MarketplacePlanRequest): MarketplaceOperationPlan {
     const catalog = this.options.catalog()
-    const entry = catalog?.entries.find(item => item.repositoryId === request.repositoryId)
+    const entry = catalog?.entries.find(item => (
+      item.repositoryId === request.repositoryId && isPublicMarketplaceEntry(item)
+    ))
     if (catalog === null || entry === undefined) {
       return emptyPlan(request, this.options.runtime.profileName, 'catalog-entry-missing')
     }
-    const state = this.snapshot().plugins.find(item => item.repositoryId === request.repositoryId)
-    if (state === undefined) return emptyPlan(request, this.options.runtime.profileName, 'catalog-entry-missing', entry)
+    if (this.options.capabilities.packageManager === 'unavailable') {
+      return emptyPlan(request, this.options.runtime.profileName, 'package-manager-unavailable', entry)
+    }
+    if (!this.options.capabilities.profileWritable) {
+      return emptyPlan(request, this.options.runtime.profileName, 'profile-not-writable', entry)
+    }
+    const manifest = readProfileManifest('dsh marketplace', this.options.runtime.dir)
+    const state = pluginState(this.options.runtime, manifest, entry)
     if (isRestartPending(state.state)) {
       return emptyPlan(request, this.options.runtime.profileName, 'restart-required', entry)
     }
@@ -312,7 +392,9 @@ export class MarketplaceProfileOperations {
       return Promise.resolve(this.failure('plan-expired'))
     }
     const current = this.options.catalog()
-    const state = this.snapshot().plugins.find(item => item.repositoryId === stored.plan.repositoryId)
+    const entry = current?.entries.find(item => item.repositoryId === stored.plan.repositoryId)
+    const manifest = readProfileManifest('dsh marketplace', this.options.runtime.dir)
+    const state = entry === undefined ? undefined : pluginState(this.options.runtime, manifest, entry)
     if (current?.integrity.digest !== stored.catalogDigest || state?.installedSpec !== stored.installedSpec) {
       return Promise.resolve(this.failure('profile-state-changed', stored.plan))
     }

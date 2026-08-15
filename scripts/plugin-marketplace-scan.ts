@@ -24,10 +24,10 @@ import {
   type GitHubSearchWindow,
 } from './plugin-marketplace-github.ts'
 
-export const MARKETPLACE_SCANNER_VERSION = '2'
+export const MARKETPLACE_SCANNER_VERSION = '3'
 export const DEFAULT_MARKETPLACE_TOPIC = 'dsh-plugin'
 const VALIDATION_CONCURRENCY = 12
-const STATE_SCHEMA_VERSION = 1
+const STATE_SCHEMA_VERSION = 5
 const SEARCH_EPOCH = '1970-01-01T00:00:00.000Z'
 
 /** Narrow seam used by deterministic scanner tests. */
@@ -42,11 +42,17 @@ interface RepositoryScanState {
   readonly validatorVersion: string
   readonly packageEtag: string | null
   readonly patchEtag: string | null
+  readonly publishedFiles: readonly string[]
+  readonly exportFileTargets: readonly string[]
+  readonly patchFileTargets: readonly string[]
+  readonly patchFileTargetsKnown: boolean
+  /** Root-relative targets verified against the package's explicit files declaration for one-click installation. */
+  readonly oneClickFileTargets: readonly string[]
   readonly entry: MarketplaceCatalogEntry
 }
 
 interface MarketplaceScannerState {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 5
   readonly topic: string
   readonly searchWindows: readonly GitHubSearchWindow[]
   readonly repositories: Readonly<Record<string, RepositoryScanState>>
@@ -56,6 +62,7 @@ interface ScanOptions {
   readonly client: MarketplaceGitHubReader
   readonly topic: string
   readonly outputPath: string
+  readonly rejectedPath: string
   readonly statePath: string
   readonly now?: () => Date
 }
@@ -68,6 +75,10 @@ interface PackageMetadata {
   readonly license: string | null
   readonly keywords: readonly string[]
   readonly patchPath: string | null
+  /** Explicit package files that provide static publication evidence. */
+  readonly publishedFiles: readonly string[]
+  /** All package export targets required by the Host and, where declared, Client entry points. */
+  readonly exportTargets: readonly string[] | null
   readonly riskSignals: readonly MarketplaceRiskSignal[]
   readonly earlyFailure: MarketplaceValidationCode | null
 }
@@ -101,6 +112,72 @@ function normalizePatchPath(value: string): string | null {
   return normalized
 }
 
+function exportTargetPaths(value: unknown): string[] | null {
+  if (typeof value === 'string') {
+    const path = normalizePatchPath(value)
+    return path === null ? null : [path]
+  }
+  if (!isRecord(value)) return null
+  const targets: string[] = []
+  for (const target of Object.values(value)) {
+    const nested = exportTargetPaths(target)
+    if (nested === null) return null
+    targets.push(...nested)
+  }
+  return uniqueSorted(targets)
+}
+
+function declaredExportTargets(value: Record<string, unknown>): string[] | null {
+  const exports = value.exports
+  if (exports === undefined) {
+    const main = typeof value.main === 'string' ? normalizePatchPath(value.main) : null
+    return main === null ? null : [main]
+  }
+  const clientDeclared = isRecord(value.dsh) && 'client' in value.dsh
+  if (!isRecord(exports)) {
+    const hostTargets = exportTargetPaths(exports)
+    return clientDeclared || hostTargets === null ? null : hostTargets
+  }
+  const hostExport = '.' in exports
+    ? exports['.']
+    : Object.keys(exports).some(key => key.startsWith('.')) ? undefined : exports
+  const hostTargets = hostExport === undefined ? null : exportTargetPaths(hostExport)
+  if (hostTargets === null) return null
+  if (!clientDeclared) return hostTargets
+  const clientTargets = exportTargetPaths(exports['./client'])
+  return clientTargets === null ? null : uniqueSorted([...hostTargets, ...clientTargets])
+}
+
+function explicitPackageFiles(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return uniqueSorted(value.flatMap((item): string[] => {
+    if (typeof item !== 'string' || /[*?\[\]{}!]/.test(item)) return []
+    const path = normalizePatchPath(item)
+    return path === null ? [] : [path]
+  }))
+}
+
+function directPatchFileTargets(text: string): string[] | null {
+  let document: unknown
+  try {
+    document = yaml.load(text)
+  } catch {
+    return null
+  }
+  const targets: string[] = []
+  const visit = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.every(visit)
+    if (!isRecord(value)) return true
+    if (typeof value.name === 'string' && value.name.startsWith('.')) {
+      const target = normalizePatchPath(value.name)
+      if (target === null) return false
+      targets.push(target)
+    }
+    return Object.values(value).every(visit)
+  }
+  return visit(document) ? uniqueSorted(targets) : null
+}
+
 function authorFromPackage(value: unknown): string | null {
   if (typeof value === 'string' && value.trim().length > 0) return value
   if (isRecord(value) && typeof value.name === 'string' && value.name.trim().length > 0) return value.name
@@ -126,6 +203,8 @@ function packageMetadata(text: string, repository: GitHubRepository): PackageMet
       license: repository.license,
       keywords: [],
       patchPath: null,
+      publishedFiles: [],
+      exportTargets: null,
       riskSignals: [],
       earlyFailure: 'package-json-invalid',
     }
@@ -139,6 +218,8 @@ function packageMetadata(text: string, repository: GitHubRepository): PackageMet
       license: repository.license,
       keywords: [],
       patchPath: null,
+      publishedFiles: [],
+      exportTargets: null,
       riskSignals: [],
       earlyFailure: 'package-json-invalid',
     }
@@ -162,6 +243,8 @@ function packageMetadata(text: string, repository: GitHubRepository): PackageMet
     license: typeof value.license === 'string' ? value.license : repository.license,
     keywords: keywordsFromPackage(value.keywords),
     patchPath: declaredPath,
+    publishedFiles: explicitPackageFiles(value.files),
+    exportTargets: declaredExportTargets(value),
     riskSignals: uniqueSorted(risks) as MarketplaceRiskSignal[],
     earlyFailure,
   }
@@ -172,6 +255,8 @@ function packageMetadataFromEntry(entry: MarketplaceCatalogEntry): PackageMetada
     ...entry.package,
     keywords: entry.keywords,
     patchPath: entry.source.patchPath,
+    publishedFiles: [],
+    exportTargets: null,
     riskSignals: entry.riskSignals.filter(signal => signal === 'lifecycle-script' || signal === 'build-script'),
     earlyFailure: entry.source.patchPath === null && entry.validation.status === 'invalid'
       ? entry.validation.code
@@ -205,10 +290,12 @@ function installabilityFor(
   status: MarketplaceCatalogEntry['validation']['status'],
   commitSha: string | null,
   metadata: PackageMetadata,
+  oneClickEvidence: boolean,
 ): MarketplaceCatalogEntry['installability'] {
   if (status !== 'valid') return 'browse-only'
   if (commitSha === null || metadata.name === null || metadata.version === null
-    || metadata.riskSignals.includes('lifecycle-script') || metadata.riskSignals.includes('build-script')) {
+    || metadata.riskSignals.includes('lifecycle-script') || metadata.riskSignals.includes('build-script')
+    || !oneClickEvidence) {
     return 'manual'
   }
   return 'one-click-eligible'
@@ -221,6 +308,7 @@ function makeEntry(
   code: MarketplaceValidationCode,
   firstSeenAt: string,
   indexedAt: string,
+  oneClickEvidence = false,
 ): MarketplaceCatalogEntry {
   const status = code === 'valid-bundle' ? 'valid' : code === 'repository-archived' ? 'archived' : 'invalid'
   const source = sourceFor(repository, commitSha)
@@ -260,7 +348,7 @@ function makeEntry(
     },
     validation: { status, code, message: validationMessage(code) },
     compatibility: 'unknown',
-    installability: installabilityFor(status, commitSha, metadata),
+    installability: installabilityFor(status, commitSha, metadata, oneClickEvidence),
     riskSignals: risks,
   }
 }
@@ -396,7 +484,16 @@ async function readState(path: string, topic: string): Promise<MarketplaceScanne
       || typeof raw.pushedAt !== 'string'
       || typeof raw.validatorVersion !== 'string'
       || !(typeof raw.packageEtag === 'string' || raw.packageEtag === null)
-      || !(typeof raw.patchEtag === 'string' || raw.patchEtag === null)) continue
+      || !(typeof raw.patchEtag === 'string' || raw.patchEtag === null)
+      || !Array.isArray(raw.publishedFiles)
+      || raw.publishedFiles.some(path => typeof path !== 'string')
+      || !Array.isArray(raw.exportFileTargets)
+      || raw.exportFileTargets.some(path => typeof path !== 'string')
+      || !Array.isArray(raw.patchFileTargets)
+      || raw.patchFileTargets.some(path => typeof path !== 'string')
+      || typeof raw.patchFileTargetsKnown !== 'boolean'
+      || !Array.isArray(raw.oneClickFileTargets)
+      || raw.oneClickFileTargets.some(path => typeof path !== 'string')) continue
     const entry = parsePreviousEntry(raw.entry)
     if (entry === null || entry.repositoryId !== id) continue
     repositories[id] = {
@@ -404,6 +501,11 @@ async function readState(path: string, topic: string): Promise<MarketplaceScanne
       validatorVersion: raw.validatorVersion,
       packageEtag: raw.packageEtag,
       patchEtag: raw.patchEtag,
+      publishedFiles: uniqueSorted(raw.publishedFiles),
+      exportFileTargets: uniqueSorted(raw.exportFileTargets),
+      patchFileTargets: uniqueSorted(raw.patchFileTargets),
+      patchFileTargetsKnown: raw.patchFileTargetsKnown,
+      oneClickFileTargets: uniqueSorted(raw.oneClickFileTargets),
       entry,
     }
   }
@@ -439,6 +541,14 @@ async function discoverRepositories(
   }
 }
 
+function hasStaticFileEvidence(
+  targets: readonly string[] | null,
+  publishedFiles: readonly string[],
+): boolean {
+  if (targets === null || targets.length === 0) return false
+  return targets.every(target => publishedFiles.includes(target))
+}
+
 async function validateRepository(
   client: MarketplaceGitHubReader,
   repository: GitHubRepository,
@@ -457,6 +567,8 @@ async function validateRepository(
         license: repository.license,
         keywords: [],
         patchPath: null,
+        publishedFiles: [],
+        exportTargets: null,
         riskSignals: [],
         earlyFailure: null,
       } satisfies PackageMetadata
@@ -466,6 +578,11 @@ async function validateRepository(
       validatorVersion: MARKETPLACE_SCANNER_VERSION,
       packageEtag: previous?.packageEtag ?? null,
       patchEtag: previous?.patchEtag ?? null,
+      publishedFiles: previous?.publishedFiles ?? [],
+      exportFileTargets: previous?.exportFileTargets ?? [],
+      patchFileTargets: previous?.patchFileTargets ?? [],
+      patchFileTargetsKnown: previous?.patchFileTargetsKnown ?? false,
+      oneClickFileTargets: previous?.oneClickFileTargets ?? [],
       entry: makeEntry(repository, commitSha, metadata, 'repository-archived', firstSeenAt, indexedAt),
     }
   }
@@ -486,6 +603,8 @@ async function validateRepository(
       license: repository.license,
       keywords: [],
       patchPath: null,
+      publishedFiles: [],
+      exportTargets: null,
       riskSignals: [],
       earlyFailure: 'package-json-missing',
     }
@@ -502,6 +621,11 @@ async function validateRepository(
       validatorVersion: MARKETPLACE_SCANNER_VERSION,
       packageEtag,
       patchEtag: null,
+      publishedFiles: [],
+      exportFileTargets: [],
+      patchFileTargets: [],
+      patchFileTargetsKnown: false,
+      oneClickFileTargets: [],
       entry: makeEntry(repository, commitSha, metadata, metadata.earlyFailure, firstSeenAt, indexedAt),
     }
   }
@@ -520,12 +644,76 @@ async function validateRepository(
     }
     code = previous.entry.validation.code === 'valid-bundle' ? 'valid-bundle' : 'patch-invalid'
   } else code = patchDocumentIsValid(patch.text) ? 'valid-bundle' : 'patch-invalid'
+  const exportFileTargets = manifest.status === 'not-modified'
+    ? previous?.exportFileTargets ?? []
+    : metadata.exportTargets ?? []
+  const publishedFiles = manifest.status === 'not-modified'
+    ? previous?.publishedFiles ?? []
+    : metadata.publishedFiles
+  const parsedPatchTargets = patch.status === 'ok' ? directPatchFileTargets(patch.text) : null
+  const patchFileTargets = patch.status === 'not-modified'
+    ? previous?.patchFileTargets ?? []
+    : parsedPatchTargets ?? []
+  const patchFileTargetsKnown = patch.status === 'not-modified'
+    ? previous?.patchFileTargetsKnown ?? false
+    : parsedPatchTargets !== null
+  const targets = code === 'valid-bundle' && exportFileTargets.length > 0 && patchFileTargetsKnown
+    ? uniqueSorted([...exportFileTargets, ...patchFileTargets, metadata.patchPath])
+    : []
+  const oneClickEvidence = hasStaticFileEvidence(targets, publishedFiles)
   return {
     pushedAt: repository.pushedAt,
     validatorVersion: MARKETPLACE_SCANNER_VERSION,
     packageEtag,
     patchEtag: patch.etag,
-    entry: makeEntry(repository, commitSha, metadata, code, firstSeenAt, indexedAt),
+    publishedFiles,
+    exportFileTargets,
+    patchFileTargets,
+    patchFileTargetsKnown,
+    oneClickFileTargets: targets,
+    entry: makeEntry(repository, commitSha, metadata, code, firstSeenAt, indexedAt, oneClickEvidence),
+  }
+}
+
+function failedRepositoryState(
+  repository: GitHubRepository,
+  previous: RepositoryScanState | undefined,
+  indexedAt: string,
+  commitSha: string | null,
+): RepositoryScanState {
+  const metadata = previous === undefined
+    ? {
+      name: null,
+      version: null,
+      description: repository.description,
+      author: repository.owner,
+      license: repository.license,
+      keywords: [],
+      patchPath: null,
+      publishedFiles: [],
+      exportTargets: null,
+      riskSignals: [],
+      earlyFailure: null,
+    } satisfies PackageMetadata
+    : packageMetadataFromEntry(previous.entry)
+  return {
+    pushedAt: repository.pushedAt,
+    validatorVersion: MARKETPLACE_SCANNER_VERSION,
+    packageEtag: previous?.packageEtag ?? null,
+    patchEtag: previous?.patchEtag ?? null,
+    publishedFiles: [],
+    exportFileTargets: [],
+    patchFileTargets: [],
+    patchFileTargetsKnown: false,
+    oneClickFileTargets: [],
+    entry: makeEntry(
+      repository,
+      commitSha,
+      metadata,
+      'github-request-failed',
+      previous?.entry.firstSeenAt ?? indexedAt,
+      indexedAt,
+    ),
   }
 }
 
@@ -545,7 +733,13 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
       || old.entry.validation.status !== 'valid'
       || old.entry.repository.archived !== repository.archived)
   })
-  const commits = await options.client.resolveDefaultBranchCommits(validation)
+  let commits: Readonly<Record<string, string>> = {}
+  try {
+    commits = await options.client.resolveDefaultBranchCommits(validation)
+  } catch {
+    // Content validation can still produce an active, browseable entry when the
+    // best-effort immutable-ref lookup is temporarily unavailable.
+  }
   for (let offset = 0; offset < discovered.repositories.length; offset += VALIDATION_CONCURRENCY) {
     const batch = discovered.repositories.slice(offset, offset + VALIDATION_CONCURRENCY)
     const results = await Promise.all(batch.map(async (repository) => {
@@ -555,16 +749,25 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
         || old.validatorVersion !== MARKETPLACE_SCANNER_VERSION
         || old.entry.validation.status !== 'valid'
         || old.entry.repository.archived !== repository.archived
-      const state = mustValidate
-        ? await validateRepository(options.client, repository, old, generatedAt, commits[repository.id] ?? null)
-        : { ...old, entry: refreshRepositoryMetadata(repository, old.entry) }
+      let state: RepositoryScanState
+      if (!mustValidate) {
+        state = { ...old, entry: refreshRepositoryMetadata(repository, old.entry) }
+      } else {
+        try {
+          state = await validateRepository(options.client, repository, old, generatedAt, commits[repository.id] ?? null)
+        } catch {
+          state = failedRepositoryState(repository, old, generatedAt, commits[repository.id] ?? null)
+        }
+      }
       return [repository.id, state] as const
     }))
     for (const [id, state] of results) repositories[id] = state
   }
-  const entries = Object.values(repositories)
+  const allEntries = Object.values(repositories)
     .map(state => state.entry)
     .sort((left, right) => left.repository.fullName.localeCompare(right.repository.fullName))
+  const entries = allEntries.filter(entry => entry.validation.status === 'valid' && !entry.repository.archived)
+  const rejectedEntries = allEntries.filter(entry => entry.validation.status !== 'valid' || entry.repository.archived)
   const catalog = sealMarketplaceCatalog({
     schemaVersion: 1,
     generatedAt,
@@ -573,17 +776,31 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
     integrity: { algorithm: 'sha256', digest: '' },
     summary: {
       entryCount: entries.length,
-      invalidEntryCount: entries.filter(entry => entry.validation.status !== 'valid').length,
+      invalidEntryCount: 0,
     },
     entries,
   })
   parseMarketplaceCatalogText(JSON.stringify(catalog))
+  const rejected = sealMarketplaceCatalog({
+    schemaVersion: 1,
+    generatedAt,
+    scannerVersion: MARKETPLACE_SCANNER_VERSION,
+    topic: options.topic,
+    integrity: { algorithm: 'sha256', digest: '' },
+    summary: {
+      entryCount: rejectedEntries.length,
+      invalidEntryCount: rejectedEntries.filter(entry => entry.validation.status !== 'valid').length,
+    },
+    entries: rejectedEntries,
+  })
+  parseMarketplaceCatalogText(JSON.stringify(rejected))
   const state: MarketplaceScannerState = {
     schemaVersion: STATE_SCHEMA_VERSION,
     topic: options.topic,
     searchWindows: discovered.windows,
     repositories,
   }
+  await writeFileAtomic(options.rejectedPath, `${JSON.stringify(rejected)}\n`, { mode: 0o644, dirMode: 0o755 })
   await writeFileAtomic(options.outputPath, `${JSON.stringify(catalog)}\n`, { mode: 0o644, dirMode: 0o755 })
   await writeFileAtomic(options.statePath, `${JSON.stringify(state)}\n`, { mode: 0o600, dirMode: 0o700 })
   return catalog
@@ -593,6 +810,7 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       output: { type: 'string', default: 'website/public/plugin-marketplace/catalog-v1.json' },
+      rejected: { type: 'string', default: '.cache/plugin-marketplace/rejected-v1.json' },
       state: { type: 'string', default: '.cache/plugin-marketplace/scanner-state-v1.json' },
       topic: { type: 'string', default: DEFAULT_MARKETPLACE_TOPIC },
     },
@@ -602,6 +820,7 @@ async function main(): Promise<void> {
     client: new GitHubMarketplaceClient({ token }),
     topic: values.topic,
     outputPath: resolve(values.output),
+    rejectedPath: resolve(values.rejected),
     statePath: resolve(values.state),
   })
   process.stdout.write(`Published ${String(catalog.summary.entryCount)} marketplace entries.\n`)

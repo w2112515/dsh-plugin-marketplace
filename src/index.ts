@@ -8,8 +8,18 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { MarketplaceCatalogClient } from './catalog-client.ts'
-import { MarketplaceProfileOperations, type MarketplaceProfileRuntime } from './profile-operations.ts'
-import type { MarketplaceExecuteRequest, MarketplacePlanRequest } from './types.ts'
+import { detailMarketplaceEntry, queryMarketplaceCatalog } from './catalog-query.ts'
+import {
+  detectMarketplaceOperationCapabilities,
+  MarketplaceProfileOperations,
+  type MarketplaceProfileRuntime,
+} from './profile-operations.ts'
+import type {
+  MarketplaceExecuteRequest,
+  MarketplaceListRequest,
+  MarketplacePlanRequest,
+  MarketplaceRefreshResponse,
+} from './types.ts'
 
 export type * from './types.ts'
 export {
@@ -113,6 +123,34 @@ function executeRequest(value: unknown): MarketplaceExecuteRequest {
   return { planId: value.planId as MarketplaceExecuteRequest['planId'] }
 }
 
+const INSTALLABILITY_FILTERS = new Set(['all', 'one-click-eligible', 'manual'])
+const SORTS = new Set(['recommended', 'stars', 'recently-updated', 'recently-added'])
+
+function listRequest(value: unknown): MarketplaceListRequest {
+  if (!isRecord(value) || typeof value.query !== 'string' || value.query.length > 256
+    || typeof value.installability !== 'string' || !INSTALLABILITY_FILTERS.has(value.installability)
+    || typeof value.sort !== 'string' || !SORTS.has(value.sort)
+    || typeof value.page !== 'number' || !Number.isSafeInteger(value.page) || value.page < 1) {
+    throw new ApiFailure(400, 'request-invalid', 'Invalid marketplace list request.')
+  }
+  return value as unknown as MarketplaceListRequest
+}
+
+function detailRequest(value: unknown): string {
+  if (!isRecord(value) || typeof value.repositoryId !== 'string'
+    || value.repositoryId.length === 0 || value.repositoryId.length > 128) {
+    throw new ApiFailure(400, 'request-invalid', 'Invalid marketplace detail request.')
+  }
+  return value.repositoryId
+}
+
+function refreshRequest(value: unknown): { request: MarketplaceListRequest; currentDigest: string } {
+  if (!isRecord(value) || typeof value.currentDigest !== 'string' || value.currentDigest.length > 128) {
+    throw new ApiFailure(400, 'request-invalid', 'Invalid marketplace refresh request.')
+  }
+  return { request: listRequest(value.request), currentDigest: value.currentDigest }
+}
+
 function profileRuntime(ctx: Context): MarketplaceProfileRuntime {
   if (ctx.baseUrl === undefined || !ctx.baseUrl.startsWith('file:')) {
     throw new Error('plugin marketplace requires the Loader profile baseUrl')
@@ -137,9 +175,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     maxBytes: config.maxBytes,
   })
   await catalog.initialize()
+  const runtime = profileRuntime(ctx)
+  const capabilities = await detectMarketplaceOperationCapabilities(runtime)
   const operations = new MarketplaceProfileOperations({
-    runtime: profileRuntime(ctx),
+    runtime,
     catalog: () => catalog.view().catalog,
+    capabilities,
   })
 
   const disposeRoute = ctx.webServer.register({
@@ -156,8 +197,37 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         const method = body.method
         let value: unknown
         switch (method) {
-          case 'snapshot': value = catalog.view(); break
-          case 'refresh': value = await catalog.refresh(); break
+          case 'bootstrap': {
+            const request = listRequest(body.params)
+            if (catalog.view().catalog === null) await catalog.refresh()
+            value = {
+              list: queryMarketplaceCatalog(catalog.view(), request),
+              capabilities,
+              operations: operations.snapshot(),
+            }
+            break
+          }
+          case 'list': value = queryMarketplaceCatalog(catalog.view(), listRequest(body.params)); break
+          case 'detail': {
+            value = detailMarketplaceEntry(catalog.view(), detailRequest(body.params), operations.snapshot().plugins)
+            break
+          }
+          case 'refresh': {
+            const params = refreshRequest(body.params)
+            const refreshed = await catalog.refresh()
+            const list = queryMarketplaceCatalog(refreshed, params.request)
+            const changed = list.digest !== params.currentDigest
+            const result: MarketplaceRefreshResponse = {
+              changed,
+              list: changed ? list : null,
+              source: list.source,
+              stale: list.stale,
+              lastSuccessfulFetchAt: list.lastSuccessfulFetchAt,
+              error: list.error,
+            }
+            value = result
+            break
+          }
           case 'operationSnapshot': value = operations.snapshot(); break
           case 'plan': value = operations.plan(planRequest(body.params)); break
           case 'execute': value = await operations.execute(executeRequest(body.params)); break

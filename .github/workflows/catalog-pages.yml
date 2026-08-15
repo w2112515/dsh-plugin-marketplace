@@ -38,6 +38,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm run scan
+      - name: Upload rejected scan candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-marketplace-rejected-v1
+          path: .cache/plugin-marketplace/rejected-v1.json
+          if-no-files-found: error
       - run: New-Item -ItemType File -Force website/public/.nojekyll
         shell: pwsh
       - uses: actions/configure-pages@v6
