@@ -65,7 +65,11 @@ const client: UserConfig = {
         cssModules: { pattern: '[hash]_[local]' },
         minify: true,
       })
-      const classes = Object.fromEntries(Object.entries(result.exports ?? {}).map(([key, value]) => [key, value.name]))
+      const classes = Object.fromEntries(
+        Object.entries(result.exports ?? {})
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, value]) => [key, value.name]),
+      )
       const tagId = `${PACKAGE_ID}/${basename(file)}`
       return [
         `const css = ${JSON.stringify(result.code.toString())};`,

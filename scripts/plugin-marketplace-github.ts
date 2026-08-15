@@ -126,11 +126,19 @@ export class GitHubMarketplaceClient {
 
   /** Search one page while respecting GitHub Search's independent minute budget. */
   async searchRepositories(topic: string, window: GitHubSearchWindow, page: number): Promise<GitHubSearchPage> {
+    const start = Date.parse(window.start)
+    const end = Date.parse(window.end)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      throw new TypeError(`GitHub search window is invalid: ${window.start}..${window.end}`)
+    }
+    // GitHub accepts a single inclusive range qualifier. Using separate >= and
+    // < qualifiers causes one side to be ignored and defeats recursive bisection.
+    const inclusiveEnd = new Date(end - 1).toISOString()
     const elapsed = this.now() - this.lastSearchAt
     if (elapsed < SEARCH_INTERVAL_MS) await this.sleep(SEARCH_INTERVAL_MS - elapsed)
     this.lastSearchAt = this.now()
     const params = new URLSearchParams({
-      q: `topic:${topic} created:>=${window.start} created:<${window.end}`,
+      q: `topic:${topic} created:${window.start}..${inclusiveEnd}`,
       per_page: '100',
       page: String(page),
       sort: 'updated',

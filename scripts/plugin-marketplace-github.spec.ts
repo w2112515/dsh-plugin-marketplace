@@ -12,8 +12,10 @@ describe('GitHubMarketplaceClient', () => {
     let now = 0
     const sleeps: number[] = []
     const requests: Headers[] = []
+    const urls: string[] = []
     let requestCount = 0
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      urls.push(String(input))
       requests.push(new Headers(init?.headers))
       requestCount += 1
       if (requestCount === 1) return new Response(null, { status: 429, headers: { 'retry-after': '1' } })
@@ -38,6 +40,19 @@ describe('GitHubMarketplaceClient', () => {
     expect(sleeps).toContain(1_000)
     expect(sleeps.reduce((total, delay) => total + delay, 0)).toBe(2_100)
     expect(requests[0]?.get('authorization')).toBe('Bearer project-token')
+    expect(new URL(urls[0]!).searchParams.get('q')).toBe(
+      'topic:deepseek-harness-plugin created:1970-01-01T00:00:00.000Z..2026-08-14T23:59:59.999Z',
+    )
+  })
+
+  it('rejects empty or reversed search windows before making a request', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch
+    const client = new GitHubMarketplaceClient({ token: 'project-token', fetchImpl })
+    await expect(client.searchRepositories('dsh-plugin', {
+      start: '2026-08-15T00:00:00.000Z',
+      end: '2026-08-15T00:00:00.000Z',
+    }, 1)).rejects.toThrow('window is invalid')
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('sends conditional content requests and preserves a 304 response', async () => {
