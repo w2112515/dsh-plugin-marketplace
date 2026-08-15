@@ -489,8 +489,10 @@ export class MarketplaceProfileOperations {
       backup(join(this.options.runtime.dir, 'pnpm-lock.yaml')),
       backup(join(this.options.runtime.dir, 'pnpm-workspace.yaml')),
     ])
+    // pnpm remove rejects --ignore-scripts (it never runs lifecycle scripts);
+    // add keeps it so third-party install hooks never execute.
     const args = plan.action === 'remove'
-      ? ['remove', '--ignore-scripts', packageName]
+      ? ['remove', packageName]
       : ['add', '--ignore-scripts', '--save-exact', plan.sourceRef as string]
     const command = await this.runPnpm(args, this.options.runtime.dir, signal)
     if (this.disposed) {

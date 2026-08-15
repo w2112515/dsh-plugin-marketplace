@@ -221,6 +221,8 @@ describe('MarketplaceProfileOperations', () => {
       status: 'succeeded', action: 'remove', snapshot: { plugins: [{ state: 'pending-removal' }] },
     })
     expect(calls.map(args => args[0])).toEqual(['add', 'remove'])
+    // pnpm remove rejects --ignore-scripts; the remove argv must stay flag-free.
+    expect(calls[1]).toEqual(['remove', catalog.entries[0]!.package.name])
   })
 
   it('rejects expired plans and profile drift without invoking pnpm', async () => {
