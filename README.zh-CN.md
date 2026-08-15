@@ -16,6 +16,8 @@ DSH 插件市场是一个**仓外可安装的 DSH bundle**，为 DeepSeek Harnes
 - **策展整合方案**：一次审阅，装出一套完整的能力基线。
 - **无遥测、无安装统计、无服务器**——目录就是 GitHub Pages 上的静态 JSON。
 
+![DSH 设置中的插件市场：2211 个插件、九个分类、搜索、新鲜度指示和每行的评分入口](docs/screenshots/discover.png)
+
 ## 安装到本机 DSH
 
 从 GitHub 安装必须固定 commit（本仓库提交了构建后的 `lib/`，因此不会在你的机器上执行 `prepare`）：
@@ -45,6 +47,8 @@ dsh web
 | **需确认脚本** | 目标缺失（未随仓库提交构建产物）但声明了生命周期脚本 | 审核页**逐字展示**脚本内容；你显式勾选同意后，Host 以 `--allow-build=<包名>` 替代 `--ignore-scripts` 执行一次安装，脚本执行被精确限定在本次调用的这一个包上。不写入 `allowBuilds`，同意永不持久化 |
 | **手动安装** | 以上都不满足 | 只展示仓库链接，市场不执行任何内容 |
 
+![插件详情页：用途、新鲜度与活跃度证据、社区评分，以及经过能力预检的安装面板](docs/screenshots/plugin-detail.png)
+
 ## 整合方案（Solution Packs）
 
 整合包是一个插件仓库策展清单。仓库同时携带 `dsh-plugin` 与 `dsh-plugin-pack` 两个 topic 并提供 `dsh.pack.json` 即成为整合包：
@@ -63,6 +67,14 @@ dsh web
 - 安装整合包 = 串行复用单插件的 plan→execute 路径，首个失败即停止、不回滚、逐项报告结果。
 - **整合包不放权**：需确认脚本的插件仍需进入其详情页单独审阅同意；手动项保持手动。
 - **整合包永不按 star 排序。** star 排序只会奖励「把最高星插件塞进包里」的行为——那是换了皮的 star 榜单，不是策展。排序为编辑精选优先（由市场维护者审阅一致性与诚实度后列入 `FEATURED_MARKETPLACE_PACKS`），其余按新鲜度。策展宁缺毋滥：能力空缺就空着，不用未经验证的插件凑数。
+
+![整合方案视图：精选的 DSH 分类星数榜首整合包及其前置展示的安装构成](docs/screenshots/packs.png)
+
+![整合包详情页：逐项安装状态与诚实的 3/9 可自动安装计数，不代替用户做任何同意](docs/screenshots/pack-detail.png)
+
+## 社区评分
+
+评分借用 GitHub 原生 reaction：目录中每个插件在[评分 issue](https://github.com/w2112515/dsh-plugin-marketplace/issues/1) 下有一条投票评论，点 👍/👎 即投票——一票对应一个真实 GitHub 账号。详情页展示总评分与近 90 天两个窗口，**不满 10 票不出结论**。客户端只读，投票全程发生在 GitHub 上，市场绝不持有你的凭据。
 
 ## 隐私立场
 

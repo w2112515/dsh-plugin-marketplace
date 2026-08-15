@@ -16,6 +16,8 @@ At a glance:
 - **Curated solution packs** that install a coherent capability baseline in one reviewed action.
 - **No telemetry, no install counts, no server** — the catalog is static JSON on GitHub Pages.
 
+![DSH Settings with the Marketplace tab open: 2,211 plugins across nine categories, with search, freshness meters, and a rating link on every row](docs/screenshots/discover.png)
+
 ## Install into your DSH
 
 Git installs must pin a commit (this repository commits its built `lib/`, so no `prepare` runs on your machine):
@@ -45,6 +47,8 @@ Automatic installs pin an immutable 40-character commit and always go through ca
 | **Needs script review** | Targets are absent (build output not shipped), but the package declares lifecycle scripts | Scripts are shown **verbatim** in the review step; after your explicit consent, the Host installs once with `--allow-build=<name>` instead of `--ignore-scripts`, scoping script execution to exactly the reviewed package within that single invocation. Nothing is written to `allowBuilds`; consent is never persisted |
 | **Manual install** | Neither of the above | Repository link only; the marketplace never runs anything |
 
+![Plugin detail page: description, freshness and activity evidence, community rating, and a capability-checked install panel](docs/screenshots/plugin-detail.png)
+
 ## Solution packs
 
 A pack is a curated list of plugin repositories — nothing more. A repository becomes a pack by carrying **both** the `dsh-plugin` and `dsh-plugin-pack` topics plus a `dsh.pack.json` manifest:
@@ -63,6 +67,14 @@ A pack is a curated list of plugin repositories — nothing more. A repository b
 - Installing a pack runs the normal single-plugin plan→execute path serially, stops at the first failure, rolls nothing back, and reports each item's outcome.
 - **Packs grant no privilege**: script-gated items still require their own per-plugin review and consent; manual items stay manual.
 - **Packs are never ranked by stars.** Star ranking would reward stuffing a pack with the most-starred plugins — a star-sorted category view in disguise, not curation. Order is editorial first (packs reviewed by the marketplace maintainers for coherence and honesty, listed in `FEATURED_MARKETPLACE_PACKS`), then freshness. Curation follows 宁缺毋滥 (*quality over quantity*): a missing capability slot stays empty rather than being filled with an unproven plugin.
+
+![Solution packs view with the featured DSH Category Star Leaders pack and its disclosed install composition](docs/screenshots/packs.png)
+
+![Pack detail page: per-item install status with an honest 3-of-9 automatic count and no consent taken on your behalf](docs/screenshots/pack-detail.png)
+
+## Community ratings
+
+Ratings borrow GitHub's native reactions: every catalog plugin gets a ballot comment under the [ratings issue](https://github.com/w2112515/dsh-plugin-marketplace/issues/1), and a 👍/👎 reaction on it is a vote — one vote per real GitHub account. Detail pages show an overall window plus a trailing 90-day window, and **no verdict appears below 10 votes**. The client is read-only; voting itself happens entirely on GitHub, so the marketplace never holds your credentials.
 
 ## Privacy stance
 
