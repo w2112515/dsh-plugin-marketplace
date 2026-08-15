@@ -72,10 +72,10 @@ const summaryPlugin = {
   category: rowItem.category, installability: rowItem.installability, compatibility: rowItem.compatibility, riskSignals: [],
 }
 
-function listModel(page = 1): MarketplaceListModel {
+function listModel(page = 1, packsCount = 0): MarketplaceListModel {
   return {
     digest: `digest-${page}`, catalogStatus: 'ready', source: 'cache', stale: false, generatedAt: '2026-08-14T00:00:00.000Z', lastSuccessfulFetchAt: '2026-08-14T00:00:00.000Z',
-    total: 51, counts: { all: 51, oneClick: 50, manual: 1, categories: { theme: 0, ui: 0, tool: 1, memory: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 }, uncategorized: 50 }, page, pageCount: 2, error: null,
+    total: 51, counts: { all: 51, oneClick: 50, manual: 1, categories: { theme: 0, ui: 0, tool: 1, memory: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 }, uncategorized: 50, packs: packsCount }, page, pageCount: 2, error: null,
     items: [{ ...rowItem, id: `plugin-${page}`, name: page === 1 ? 'Weather Bundle' : 'Second page plugin' }],
   }
 }
@@ -88,6 +88,7 @@ const packSummary: MarketplacePackSummary = {
   repositoryId: 'pack-1', name: 'Starter Pack', publisher: 'example',
   repositoryFullName: 'example/starter-pack', repositoryUrl: 'https://github.com/example/starter-pack',
   description: 'A curated starter set.', stars: 7, itemCount: 4, lastCodePushAt: '2026-08-13T00:00:00.000Z',
+  featured: true, composition: { oneClick: 2, scriptGated: 1, manual: 0, unavailable: 1 },
 }
 
 const packDetailModel: MarketplacePackDetailResponse = {
@@ -253,7 +254,7 @@ describe('PluginMarketplaceSettingsTab', () => {
       catalogStatus: 'unavailable' as const,
       source: 'none' as const,
       total: 0,
-      counts: { all: 0, oneClick: 0, manual: 0, categories: { theme: 0, ui: 0, tool: 0, memory: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 }, uncategorized: 0 },
+      counts: { all: 0, oneClick: 0, manual: 0, categories: { theme: 0, ui: 0, tool: 0, memory: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 }, uncategorized: 0, packs: 0 },
       pageCount: 0,
       items: [],
       error: { code: 'network-error' as const, message: 'offline', retryable: true },
@@ -300,12 +301,40 @@ describe('PluginMarketplaceSettingsTab', () => {
     expect(props.execute).toHaveBeenCalledWith('plan-7', true)
   })
 
+  it('browses packs through the filter chip, showing composition and the featured badge', async () => {
+    renderTab({
+      bootstrap: vi.fn(async () => ({ list: listModel(1, 1), operations: operationSnapshot })),
+      packs: vi.fn(async () => packsModel([packSummary])),
+    })
+
+    // The pack chip sits in the filter row; no permanent strip occupies the view.
+    fireEvent.click(await screen.findByRole('button', { name: /Solution packs/ }))
+    const card = await screen.findByRole('button', { name: /Starter Pack/ })
+    expect(card.textContent).toContain('Featured')
+    expect(card.textContent).toContain('2 one-click · 1 script-review · 1 not in catalog')
+    // Plugin rows and the plugin-only toolbar leave the view in pack mode.
+    expect(screen.queryByText('Weather Bundle')).toBeNull()
+    expect(screen.queryByText('Eligibility')).toBeNull()
+
+    // The search box filters packs by name, publisher, or description.
+    fireEvent.change(screen.getByPlaceholderText(/Search/), { target: { value: 'no-such-pack' } })
+    expect(screen.queryByRole('button', { name: /Starter Pack/ })).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText(/Search/), { target: { value: '' } })
+    expect(screen.getByRole('button', { name: /Starter Pack/ })).toBeTruthy()
+
+    // Any category chip returns to plugin browsing.
+    fireEvent.click(screen.getByRole('button', { name: /^All 51$/ }))
+    await screen.findByText('Weather Bundle')
+  })
+
   it('installs a pack serially through per-item plans and reports each outcome', async () => {
     const props = renderTab({
+      bootstrap: vi.fn(async () => ({ list: listModel(1, 1), operations: operationSnapshot })),
       packs: vi.fn(async () => packsModel([packSummary])),
       packDetail: vi.fn(async () => packDetailModel),
     })
 
+    fireEvent.click(await screen.findByRole('button', { name: /Solution packs/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Starter Pack/ }))
     expect(props.packDetail).toHaveBeenCalledWith('pack-1')
 
@@ -338,11 +367,13 @@ describe('PluginMarketplaceSettingsTab', () => {
       rollback: 'succeeded' as const, snapshot: operationSnapshot,
     }))
     const props = renderTab({
+      bootstrap: vi.fn(async () => ({ list: listModel(1, 1), operations: operationSnapshot })),
       packs: vi.fn(async () => packsModel([packSummary])),
       packDetail: vi.fn(async () => packDetailModel),
       execute: failedExecute,
     })
 
+    fireEvent.click(await screen.findByRole('button', { name: /Solution packs/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Starter Pack/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Install 2 plugins' }))
     await screen.findByText('Install results')

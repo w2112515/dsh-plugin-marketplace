@@ -152,6 +152,8 @@ describe('catalog query', () => {
     const result = queryMarketplaceCatalog(catalogView, defaultRequest)
     expect(result.counts.categories).toEqual({ theme: 1, memory: 0, ui: 1, tool: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 })
     expect(result.counts.uncategorized).toBe(1)
+    expect(result.counts.packs).toBe(0)
+    expect(queryMarketplaceCatalog(view([theme], [packFixture()]), defaultRequest).counts.packs).toBe(1)
     expect(result.items[0]?.repositoryCreatedAt).toBe('2026-07-01T00:00:00.000Z')
     expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, category: 'theme' }).items.map(item => item.repositoryId)).toEqual(['1'])
     expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, category: 'uncategorized' }).items.map(item => item.repositoryId)).toEqual(['3'])
@@ -204,11 +206,12 @@ describe('solution pack query', () => {
     external: [],
   }
 
-  it('lists only public packs, sorted by stars with a stable name tiebreak', () => {
+  it('lists only public packs: featured first in declared order, then freshness, never stars', () => {
     const packs = [
-      packFixture({ repositoryId: '10', repository: { ...packFixture().repository, fullName: 'acme/zeta-pack' }, stars: 5 }),
-      packFixture({ repositoryId: '11', repository: { ...packFixture().repository, fullName: 'acme/alpha-pack' }, stars: 5 }),
-      packFixture({ repositoryId: '12', repository: { ...packFixture().repository, fullName: 'acme/popular-pack' }, stars: 50 }),
+      packFixture({ repositoryId: '10', repository: { ...packFixture().repository, fullName: 'acme/zeta-pack' }, stars: 5, lastCodePushAt: '2026-08-10T00:00:00.000Z' }),
+      packFixture({ repositoryId: '11', repository: { ...packFixture().repository, fullName: 'acme/alpha-pack' }, stars: 5, lastCodePushAt: '2026-08-10T00:00:00.000Z' }),
+      packFixture({ repositoryId: '12', repository: { ...packFixture().repository, fullName: 'acme/popular-pack' }, stars: 5000, lastCodePushAt: '2026-08-12T00:00:00.000Z' }),
+      packFixture({ repositoryId: '14', repository: { ...packFixture().repository, fullName: 'w2112515/dsh-essentials-pack' }, stars: 0, lastCodePushAt: '2026-08-01T00:00:00.000Z' }),
       packFixture({
         repositoryId: '13',
         repository: { ...packFixture().repository, fullName: 'acme/broken-pack' },
@@ -216,12 +219,31 @@ describe('solution pack query', () => {
       }),
     ]
     const result = listMarketplacePacks(view([], packs))
-    expect(result.packs.map(pack => pack.repositoryId)).toEqual(['12', '11', '10'])
+    // Editorial order beats freshness; star counts never move a pack at all.
+    expect(result.packs.map(pack => pack.repositoryId)).toEqual(['14', '12', '11', '10'])
     expect(result.packs[0]).toMatchObject({
-      repositoryFullName: 'acme/popular-pack',
-      publisher: 'acme',
+      repositoryFullName: 'w2112515/dsh-essentials-pack',
+      publisher: 'w2112515',
+      featured: true,
       itemCount: 1,
     })
+    expect(result.packs[1]).toMatchObject({ repositoryFullName: 'acme/popular-pack', featured: false })
+  })
+
+  it('summarizes each pack\'s install composition from catalog truth', () => {
+    const oneClick = entry(1)
+    const scripted = entry(2, { installability: 'manual', installScripts: { prepare: 'node build.js' } })
+    const hardManual = entry(3, { installability: 'manual', installScripts: null })
+    const pack = packFixture({
+      items: [
+        { fullName: oneClick.repository.fullName, repositoryId: '1' },
+        { fullName: scripted.repository.fullName, repositoryId: '2' },
+        { fullName: hardManual.repository.fullName, repositoryId: '3' },
+        { fullName: 'ghost/not-scanned', repositoryId: null },
+      ],
+    })
+    const result = listMarketplacePacks(view([oneClick, scripted, hardManual], [pack]))
+    expect(result.packs[0]?.composition).toEqual({ oneClick: 1, scriptGated: 1, manual: 1, unavailable: 1 })
   })
 
   it('resolves every item status from catalog and profile truth, never from pack claims', () => {

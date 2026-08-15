@@ -172,6 +172,7 @@ interface MarketplaceListCounts {
   readonly manual: number;
   readonly categories: Readonly<Record<MarketplaceCategory, number>>;
   readonly uncategorized: number;
+  readonly packs: number;
 }
 /** One bounded catalog page and the freshness facts that qualify it. */
 interface MarketplaceListResponse {
@@ -215,6 +216,17 @@ interface MarketplacePluginDetailResponse {
   readonly entry: MarketplaceCatalogEntry | null;
   readonly state: MarketplaceProfilePluginState | null;
 }
+/**
+ * Catalog-truth install composition of a pack's items. Shown on pack cards so
+ * a reader knows how installable the pack is before opening it; profile-local
+ * states (installed) never leak into this summary.
+ */
+interface MarketplacePackComposition {
+  readonly oneClick: number;
+  readonly scriptGated: number;
+  readonly manual: number;
+  readonly unavailable: number;
+}
 /** Compact pack row for the discover view. */
 interface MarketplacePackSummary {
   readonly repositoryId: string;
@@ -226,6 +238,9 @@ interface MarketplacePackSummary {
   readonly stars: number;
   readonly itemCount: number;
   readonly lastCodePushAt: string;
+  /** Editorial pick of the marketplace maintainers; featured packs sort first. */
+  readonly featured: boolean;
+  readonly composition: MarketplacePackComposition;
 }
 /** All admitted packs plus the freshness facts that qualify them. */
 interface MarketplacePackListResponse {
@@ -355,7 +370,7 @@ interface MarketplaceExecuteRequest {
   readonly allowScripts?: boolean;
 }
 /** Stable result code for a committed, rejected, or recovered profile operation. */
-type MarketplaceOperationCode = 'succeeded' | 'operation-busy' | 'plan-expired' | 'plan-invalid' | 'consent-required' | 'profile-state-changed' | 'profile-write-failed' | 'pnpm-unavailable' | 'pnpm-failed' | 'installed-package-invalid' | 'rollback-failed' | 'service-disposed';
+type MarketplaceOperationCode = 'succeeded' | 'operation-busy' | 'plan-expired' | 'plan-invalid' | 'consent-required' | 'profile-state-changed' | 'pnpm-unavailable' | 'pnpm-failed' | 'installed-package-invalid' | 'rollback-failed' | 'service-disposed';
 /** Result of one profile operation, including recovery and the authoritative next snapshot. */
 interface MarketplaceOperationResult {
   readonly status: 'succeeded' | 'failed';
@@ -368,5 +383,5 @@ interface MarketplaceOperationResult {
   readonly snapshot: MarketplaceOperationSnapshot;
 }
 //#endregion
-export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePackDetailResponse, MarketplacePackEntry, MarketplacePackItem, MarketplacePackItemStatus, MarketplacePackItemView, MarketplacePackListResponse, MarketplacePackSummary, MarketplacePackValidationCode, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
+export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePackComposition, MarketplacePackDetailResponse, MarketplacePackEntry, MarketplacePackItem, MarketplacePackItemStatus, MarketplacePackItemView, MarketplacePackListResponse, MarketplacePackSummary, MarketplacePackValidationCode, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
 //# sourceMappingURL=types.d.mts.map

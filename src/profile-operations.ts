@@ -375,51 +375,6 @@ function marketplacePlanId(value: string): MarketplacePlanId {
 
 const WORKSPACE_FILE = 'pnpm-workspace.yaml'
 
-function quoteYamlKey(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`
-}
-
-/** True for an allowBuilds line granting this package, whatever spec it pins. */
-function isGrantLineFor(line: string, packageName: string): boolean {
-  return line.trimStart().startsWith(`'${`${packageName}@`.replace(/'/g, "''")}`)
-}
-
-/**
- * pnpm 11 runs a dependency's lifecycle scripts only when that dependency is
- * named in the profile's allowBuilds. Consent is granted for exactly one
- * name@spec key — the reviewed pin — so an approval never silently covers a
- * different commit, and every other package stays script-blocked by default.
- */
-function grantBuildConsent(text: string, packageName: string, sourceRef: string): string {
-  const grantLine = `  ${quoteYamlKey(`${packageName}@${sourceRef}`)}: true`
-  const lines = text.split('\n')
-  const headerIndex = lines.findIndex(line => /^allowBuilds:\s*$/.test(line))
-  if (headerIndex === -1) {
-    if (/^allowBuilds:/m.test(text)) throw new Error('pnpm-workspace.yaml allowBuilds uses an unsupported layout')
-    const base = text.endsWith('\n') ? text.slice(0, -1) : text
-    return `${base}\n\nallowBuilds:\n${grantLine}\n`
-  }
-  const kept = lines.filter(line => !isGrantLineFor(line, packageName))
-  const at = kept.findIndex(line => /^allowBuilds:\s*$/.test(line))
-  kept.splice(at + 1, 0, grantLine)
-  return kept.join('\n')
-}
-
-/** Drop this package's allowBuilds grants, and the block header when it turns empty. */
-function revokeBuildConsent(text: string, packageName: string): string {
-  const kept = text.split('\n').filter(line => !isGrantLineFor(line, packageName))
-  const at = kept.findIndex(line => /^allowBuilds:\s*$/.test(line))
-  if (at !== -1) {
-    let cursor = at + 1
-    while (cursor < kept.length && kept[cursor]?.trim() === '') cursor += 1
-    const next = kept[cursor]
-    if (next === undefined || (!next.startsWith(' ') && !next.startsWith('\t'))) {
-      kept.splice(at, 1)
-    }
-  }
-  return kept.join('\n')
-}
-
 function hasExactReviewedSource(entry: MarketplaceCatalogEntry): boolean {
   const commitSha = entry.repository.commitSha
   if (commitSha === null || !/^[0-9a-f]{40}$/.test(commitSha)) return false
@@ -667,31 +622,17 @@ export class MarketplaceProfileOperations {
       backup(join(this.options.runtime.dir, 'pnpm-lock.yaml')),
       backup(join(this.options.runtime.dir, WORKSPACE_FILE)),
     ])
-    // A consented script install first records its exact-pin grant; if that
-    // write fails we stop before pnpm runs anything rather than installing a
-    // package whose build never happened.
-    if (plan.action !== 'remove' && plan.requiresScripts) {
-      try {
-        const workspacePath = join(this.options.runtime.dir, WORKSPACE_FILE)
-        const current = await readFile(workspacePath, 'utf8')
-        await writeFileAtomic(
-          workspacePath,
-          grantBuildConsent(current, packageName, plan.sourceRef as string),
-          { mode: 0o600, dirMode: 0o700 },
-        )
-      } catch {
-        const rollback = await this.rollback(backups)
-        return this.failure('profile-write-failed', plan, rollback)
-      }
-    }
-    // pnpm remove rejects --ignore-scripts (it never runs lifecycle scripts);
-    // plain installs keep it so third-party hooks never execute; a consented
-    // install drops it exactly once, with allowBuilds limiting execution to
-    // the reviewed package@spec.
+    // Plain installs pass --ignore-scripts so third-party hooks never execute.
+    // A consented install drops it exactly once and instead passes
+    // --allow-build=<name>, scoping pnpm's script execution to the reviewed
+    // package within this single invocation — consent itself is enforced by
+    // this manager (per name@pin, scripts reviewed verbatim), never persisted
+    // to the profile. --config.strict-dep-builds=false keeps ignored transitive
+    // dependency builds a warning instead of a fatal error (pnpm ≥ 11.7).
     const args = plan.action === 'remove'
       ? ['remove', packageName]
       : plan.requiresScripts
-        ? ['add', '--save-exact', plan.sourceRef as string]
+        ? ['add', '--save-exact', `--allow-build=${packageName}`, '--config.strict-dep-builds=false', plan.sourceRef as string]
         : ['add', '--ignore-scripts', '--save-exact', plan.sourceRef as string]
     const command = await this.runPnpm(args, this.options.runtime.dir, signal)
     if (this.disposed) {
@@ -738,16 +679,6 @@ export class MarketplaceProfileOperations {
       const records = { ...readInstallRecords(this.options.runtime.dir) }
       if (plan.action === 'remove') {
         delete records[packageName]
-        try {
-          const workspacePath = join(this.options.runtime.dir, WORKSPACE_FILE)
-          const current = await readFile(workspacePath, 'utf8')
-          const next = revokeBuildConsent(current, packageName)
-          if (next !== current) {
-            await writeFileAtomic(workspacePath, next, { mode: 0o600, dirMode: 0o700 })
-          }
-        } catch {
-          // A stale grant for a spec that is no longer installed is inert.
-        }
       } else {
         records[packageName] = {
           spec: plan.sourceRef as string,

@@ -202,6 +202,7 @@ export function queryMarketplaceCatalog(
       categorized.filter(item => item.category === category).length,
     ])) as Record<MarketplaceCategory, number>,
     uncategorized: categorized.filter(item => item.category === null).length,
+    packs: (view.catalog?.packs ?? []).filter(isPublicMarketplacePack).length,
   }
   const words = normalizedWords(request.query)
   const selected = categorized
@@ -271,8 +272,46 @@ export function isPublicMarketplacePack(pack: MarketplacePackEntry): boolean {
   return pack.validation.status === 'valid' && !pack.repository.archived
 }
 
-function packSummary(pack: MarketplacePackEntry): MarketplacePackSummary {
+/**
+ * Editorial order chosen by the marketplace maintainers, applied before every
+ * other pack ordering. Packs are curated artifacts, not popularity contests:
+ * ranking them by stars would reward stuffing a pack with the most-starred
+ * plugins — a star-sorted category view in disguise. Featured packs are
+ * reviewed for coherence and honesty (every item resolves, the install
+ * composition is disclosed, no padding); the rest sort by freshness.
+ */
+export const FEATURED_MARKETPLACE_PACKS: readonly string[] = [
+  'w2112515/dsh-essentials-pack',
+]
+
+/** Catalog-truth status of one pack item; the profile only ever adds 'installed'. */
+function catalogPackItemStatus(
+  entry: MarketplaceCatalogEntry | undefined,
+): Exclude<MarketplacePackItemStatus, 'installed'> {
+  if (entry === undefined) return 'unavailable'
+  if (entry.installability === 'one-click-eligible') return 'installable'
+  // Consent-gated only when the host can actually plan it: pinned, named, versioned.
+  if (entry.installScripts !== null && entry.repository.commitSha !== null
+    && entry.package.name !== null && entry.package.version !== null) {
+    return 'script-gated'
+  }
+  return 'manual'
+}
+
+function packSummary(
+  pack: MarketplacePackEntry,
+  entriesById: ReadonlyMap<string, MarketplaceCatalogEntry>,
+): MarketplacePackSummary {
   const separator = pack.repository.fullName.indexOf('/')
+  const composition = { oneClick: 0, scriptGated: 0, manual: 0, unavailable: 0 }
+  for (const item of pack.items) {
+    const entry = item.repositoryId === null ? undefined : entriesById.get(item.repositoryId)
+    const status = catalogPackItemStatus(entry)
+    if (status === 'installable') composition.oneClick += 1
+    else if (status === 'script-gated') composition.scriptGated += 1
+    else if (status === 'manual') composition.manual += 1
+    else composition.unavailable += 1
+  }
   return {
     repositoryId: pack.repositoryId,
     name: pack.name,
@@ -283,16 +322,35 @@ function packSummary(pack: MarketplacePackEntry): MarketplacePackSummary {
     stars: pack.stars,
     itemCount: pack.items.length,
     lastCodePushAt: pack.lastCodePushAt,
+    featured: FEATURED_MARKETPLACE_PACKS.includes(pack.repository.fullName),
+    composition,
   }
 }
 
-/** List admitted packs, most-starred first; packs are few and unpaged by design. */
+/**
+ * List admitted packs: editorial picks first in their declared order, then by
+ * freshness — never by stars. Packs are few and unpaged by design.
+ */
 export function listMarketplacePacks(view: MarketplaceCatalogView): MarketplacePackListResponse {
+  const entriesById = new Map<string, MarketplaceCatalogEntry>()
+  for (const entry of view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []) {
+    entriesById.set(entry.repositoryId, entry)
+  }
+  const featuredOrder = new Map(FEATURED_MARKETPLACE_PACKS.map((fullName, index) => [fullName, index] as const))
   const packs = (view.catalog?.packs ?? [])
     .filter(isPublicMarketplacePack)
-    .sort((left, right) => right.stars - left.stars
-      || compareText(left.repository.fullName, right.repository.fullName))
-    .map(packSummary)
+    .sort((left, right) => {
+      const leftFeatured = featuredOrder.get(left.repository.fullName)
+      const rightFeatured = featuredOrder.get(right.repository.fullName)
+      if (leftFeatured !== undefined || rightFeatured !== undefined) {
+        if (leftFeatured === undefined) return 1
+        if (rightFeatured === undefined) return -1
+        return leftFeatured - rightFeatured
+      }
+      return Date.parse(right.lastCodePushAt) - Date.parse(left.lastCodePushAt)
+        || compareText(left.repository.fullName, right.repository.fullName)
+    })
+    .map(pack => packSummary(pack, entriesById))
   return {
     digest: view.catalog?.integrity.digest ?? '',
     catalogStatus: view.catalog === null ? view.status : 'ready',
@@ -308,14 +366,7 @@ function packItemStatus(
   state: MarketplaceProfilePluginState | undefined,
 ): MarketplacePackItemStatus {
   if (state !== undefined) return 'installed'
-  if (entry === undefined) return 'unavailable'
-  if (entry.installability === 'one-click-eligible') return 'installable'
-  // Consent-gated only when the host can actually plan it: pinned, named, versioned.
-  if (entry.installScripts !== null && entry.repository.commitSha !== null
-    && entry.package.name !== null && entry.package.version !== null) {
-    return 'script-gated'
-  }
-  return 'manual'
+  return catalogPackItemStatus(entry)
 }
 
 /**
@@ -351,5 +402,5 @@ export function detailMarketplacePack(
       state: state?.state ?? null,
     }
   })
-  return { pack: packSummary(pack), items }
+  return { pack: packSummary(pack, admitted), items }
 }

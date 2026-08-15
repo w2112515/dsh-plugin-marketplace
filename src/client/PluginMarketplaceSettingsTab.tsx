@@ -37,7 +37,7 @@ export interface PluginMarketplaceSettingsTabInjected {
 export type PluginMarketplaceSettingsTabProps = PropsRuntime<'settings.plugins.tab'> & PropsLocale<'settings.pluginMarketplace'> & InjectFace<PluginMarketplaceSettingsTabInjected>
 type Translate = PluginMarketplaceSettingsTabProps['t']
 type ViewKey = 'discover' | 'installed'
-type CategoryFilter = MarketplaceCategory | 'uncategorized' | 'all'
+type CategoryFilter = MarketplaceCategory | 'uncategorized' | 'all' | 'packs'
 type InstallFilter = 'all' | 'one-click' | 'manual'
 type SortKey = 'recommended' | 'stars' | 'updated' | 'added'
 type InstalledSort = 'updates' | 'name' | 'updated'
@@ -53,7 +53,8 @@ function formatTime(iso: string): string {
 function requestFor(query: string, category: CategoryFilter, filter: InstallFilter, sort: SortKey, page: number): MarketplaceListRequest {
   return {
     query: query.trim(),
-    category,
+    // 'packs' is a client-local browse mode, never a host list category.
+    category: category === 'packs' ? 'all' : category,
     installability: filter === 'one-click' ? 'one-click-eligible' : filter,
     sort: sort === 'updated' ? 'recently-updated' : sort === 'added' ? 'recently-added' : sort,
     page,
@@ -366,16 +367,31 @@ const PACK_STATUS_KEYS = {
   unavailable: 'pack.item.unavailable', installed: 'pack.item.installed',
 } satisfies Record<MarketplacePackItemView['status'], PluginMarketplaceLocaleKey>
 
-function PackStrip({ packs, t, onOpen }: { packs: readonly MarketplacePackSummary[]; t: Translate; onOpen: (id: string) => void }): ReactNode {
-  if (packs.length === 0) return null
-  return <section className={css.packSection} aria-label={t('pack.section')}>
-    <h4 className={css.externalHeading}>{t('pack.section')}</h4>
-    <div className={css.packGrid}>{packs.map(pack => <button key={pack.repositoryId} type="button" className={css.packCard} onClick={() => { onOpen(pack.repositoryId) }}>
-      <span className={css.rowHeading}><strong className={css.rowTitle} title={pack.name}>{pack.name}</strong><span className={css.relationChip}>{t('pack.itemCount', { count: pack.itemCount })}</span></span>
-      <span className={css.rowPeople}>{t('row.publisher', { publisher: pack.publisher })} · {t('card.stars', { count: pack.stars })}</span>
-      {pack.description ? <span className={css.rowDescription}>{pack.description}</span> : null}
-    </button>)}</div>
-  </section>
+/** One-line install composition for a pack card: "7 一键 · 2 需审脚本 · 1 手动". */
+function packCompositionLine(pack: MarketplacePackSummary, t: Translate): string {
+  const segments: string[] = []
+  if (pack.composition.oneClick > 0) segments.push(t('pack.composition.oneClick', { count: pack.composition.oneClick }))
+  if (pack.composition.scriptGated > 0) segments.push(t('pack.composition.scriptGated', { count: pack.composition.scriptGated }))
+  if (pack.composition.manual > 0) segments.push(t('pack.composition.manual', { count: pack.composition.manual }))
+  if (pack.composition.unavailable > 0) segments.push(t('pack.composition.unavailable', { count: pack.composition.unavailable }))
+  return segments.join(' · ')
+}
+
+function PackListView({ packs, query, t, onOpen }: { packs: readonly MarketplacePackSummary[]; query: string; t: Translate; onOpen: (id: string) => void }): ReactNode {
+  const words = query.trim().toLowerCase()
+  const visible = words.length === 0 ? packs : packs.filter(pack => [pack.name, pack.publisher, pack.repositoryFullName, pack.description ?? '']
+    .some(text => text.toLowerCase().includes(words)))
+  if (visible.length === 0) return <p className={css.status}>{t('state.emptySearch')}</p>
+  return <div className={css.packGrid}>{visible.map(pack => <button key={pack.repositoryId} type="button" className={css.packCard} onClick={() => { onOpen(pack.repositoryId) }}>
+    <span className={css.rowHeading}>
+      <strong className={css.rowTitle} title={pack.name}>{pack.name}</strong>
+      {pack.featured ? <span className={css.updateBadge}>{t('pack.featured')}</span> : null}
+      <span className={css.relationChip}>{t('pack.itemCount', { count: pack.itemCount })}</span>
+    </span>
+    <span className={css.rowPeople}>{t('row.publisher', { publisher: pack.publisher })} · {t('card.stars', { count: pack.stars })}</span>
+    <span className={css.rowMeta}>{packCompositionLine(pack, t)}</span>
+    {pack.description ? <span className={css.rowDescription}>{pack.description}</span> : null}
+  </button>)}</div>
 }
 
 function PackItemRow({ item, t, onOpenPlugin }: { item: MarketplacePackItemView; t: Translate; onOpenPlugin: (id: string) => void }): ReactNode {
@@ -528,6 +544,10 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
 
   useEffect(() => {
     let current = true
+    if (category === 'packs') {
+      // Pack browsing needs no plugin page; the packs effect owns that data.
+      return () => { current = false }
+    }
     if (!bootstrapped.current) {
       void bootstrap(request).then(({ list: next, operations }) => {
         if (!current) return
@@ -633,6 +653,9 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const installedCount = (profile?.plugins.length ?? 0) + (profile?.external.length ?? 0)
   const categoryChips: readonly { value: CategoryFilter; label: string; count: number }[] = [
     { value: 'all', label: t('filter.all'), count: model.counts.all },
+    // Packs sit with the filters but switch the entity being browsed; they are
+    // collections, not a plugin category, and never occupy permanent space.
+    ...(model.counts.packs > 0 ? [{ value: 'packs' as CategoryFilter, label: t('filter.packs'), count: model.counts.packs }] : []),
     ...(MARKETPLACE_CATEGORY_PRIORITY
       .map(value => ({ value: value as CategoryFilter, label: t(CATEGORY_KEYS[value]), count: model.counts.categories[value] }))
       .filter(chip => chip.count > 0)),
@@ -661,18 +684,23 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
       <button type="button" className={css.viewTab} aria-pressed={view === 'installed'} data-active={view === 'installed'} onClick={() => { setView('installed') }}>{t('view.installed')} <span className={css.filterCount}>{installedCount}</span></button>
     </div>
     {view === 'discover' ? <>
-      <div className={css.statusBar}><span className={css.resultCount} role="status" aria-live="polite">{t('results.count', { count: model.total })}</span><span className={css.freshness}>{freshnessAt ? t(model.source === 'cache' ? 'status.cached' : 'status.updated', { time: formatTime(freshnessAt) }) : null}{model.stale ? ` · ${t('status.stale')}` : ''}{model.catalogStatus === 'unavailable' ? ` · ${t('status.offline')}` : ''}</span><button className={css.refreshButton} type="button" onClick={onRefresh} disabled={refreshing} aria-label={t('refresh')}><IconRefreshOutline16 size={14} aria-hidden="true" />{refreshing ? t('refreshing') : t('refresh')}</button></div>
+      {category !== 'packs' ? <div className={css.statusBar}><span className={css.resultCount} role="status" aria-live="polite">{t('results.count', { count: model.total })}</span><span className={css.freshness}>{freshnessAt ? t(model.source === 'cache' ? 'status.cached' : 'status.updated', { time: formatTime(freshnessAt) }) : null}{model.stale ? ` · ${t('status.stale')}` : ''}{model.catalogStatus === 'unavailable' ? ` · ${t('status.offline')}` : ''}</span><button className={css.refreshButton} type="button" onClick={onRefresh} disabled={refreshing} aria-label={t('refresh')}><IconRefreshOutline16 size={14} aria-hidden="true" />{refreshing ? t('refreshing') : t('refresh')}</button></div> : null}
       {error ? <p className={css.inlineError} role="alert">{t('status.refreshError')}</p> : null}
       {!canInstall ? <CapabilityNotice profile={profile} t={t} /> : null}
-      {packsModel !== null && packsModel.length > 0 ? <PackStrip packs={packsModel} t={t} onOpen={openPack} /> : null}
       <label className={css.search}><IconSearchOutline16 aria-hidden="true" /><span className={css.visuallyHidden}>{t('search')}</span><input type="search" value={query} placeholder={t('search')} onChange={(event) => { setQuery(event.currentTarget.value); setPage(1) }} />{query.length > 0 ? <button className={css.clearSearch} type="button" aria-label={t('clearSearch')} onClick={() => { setQuery(''); setPage(1) }}><IconCloseOutline16 size={12} aria-hidden="true" /></button> : null}</label>
       <div className={css.controls}>
         <div className={css.filterGroup} role="group" aria-label={t('category.label')}>{categoryChips.map(chip => <button key={chip.value} type="button" className={css.filterButton} aria-pressed={category === chip.value} data-active={category === chip.value} onClick={() => { setCategory(chip.value); setPage(1) }}>{chip.label} <span className={css.filterCount}>{chip.count}</span></button>)}</div>
-        <label className={css.sortControl}><span className={css.filterLabel}>{t('filter.installability')}</span><select value={filter} onChange={(event) => { setFilter(event.currentTarget.value as InstallFilter); setPage(1) }}><option value="all">{t('filter.all')} ({model.counts.all})</option><option value="one-click">{t('filter.one-click')} ({model.counts.oneClick})</option><option value="manual">{t('filter.manual')} ({model.counts.manual})</option></select></label>
-        <label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={sort} onChange={(event) => { setSort(event.currentTarget.value as SortKey); setPage(1) }}><option value="recommended">{t('sort.recommended')}</option><option value="stars">{t('sort.stars')}</option><option value="updated">{t('sort.updated')}</option><option value="added">{t('sort.added')}</option></select></label>
+        {category !== 'packs' ? <>
+          <label className={css.sortControl}><span className={css.filterLabel}>{t('filter.installability')}</span><select value={filter} onChange={(event) => { setFilter(event.currentTarget.value as InstallFilter); setPage(1) }}><option value="all">{t('filter.all')} ({model.counts.all})</option><option value="one-click">{t('filter.one-click')} ({model.counts.oneClick})</option><option value="manual">{t('filter.manual')} ({model.counts.manual})</option></select></label>
+          <label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={sort} onChange={(event) => { setSort(event.currentTarget.value as SortKey); setPage(1) }}><option value="recommended">{t('sort.recommended')}</option><option value="stars">{t('sort.stars')}</option><option value="updated">{t('sort.updated')}</option><option value="added">{t('sort.added')}</option></select></label>
+        </> : null}
       </div>
-      {model.total === 0 ? <p className={css.status}>{query ? t('state.emptySearch') : t('state.empty')}</p> : <ul className={css.rows}>{model.items.map(plugin => <PluginRow key={plugin.id} plugin={plugin} state={profileStates.get(plugin.id)} t={t} onOpen={openPlugin} onInstall={installPlugin} rowRef={rowRef} canInstall={canInstall} />)}</ul>}
-      {model.pageCount > 1 ? <nav className={css.pagination} aria-label={t('pagination.label')}><button type="button" className={css.secondaryButton} disabled={model.page === 1} onClick={() => { setPage(model.page - 1) }}>{t('pagination.previous')}</button><span aria-live="polite">{t('pagination.page', { page: model.page, total: model.pageCount })}</span><button type="button" className={css.secondaryButton} disabled={model.page === model.pageCount} onClick={() => { setPage(model.page + 1) }}>{t('pagination.next')}</button></nav> : null}
+      {category === 'packs'
+        ? (packsModel === null ? <p className={css.status}>{t('installed.loading')}</p> : <PackListView packs={packsModel} query={query} t={t} onOpen={openPack} />)
+        : <>
+          {model.total === 0 ? <p className={css.status}>{query ? t('state.emptySearch') : t('state.empty')}</p> : <ul className={css.rows}>{model.items.map(plugin => <PluginRow key={plugin.id} plugin={plugin} state={profileStates.get(plugin.id)} t={t} onOpen={openPlugin} onInstall={installPlugin} rowRef={rowRef} canInstall={canInstall} />)}</ul>}
+          {model.pageCount > 1 ? <nav className={css.pagination} aria-label={t('pagination.label')}><button type="button" className={css.secondaryButton} disabled={model.page === 1} onClick={() => { setPage(model.page - 1) }}>{t('pagination.previous')}</button><span aria-live="polite">{t('pagination.page', { page: model.page, total: model.pageCount })}</span><button type="button" className={css.secondaryButton} disabled={model.page === model.pageCount} onClick={() => { setPage(model.page + 1) }}>{t('pagination.next')}</button></nav> : null}
+        </>}
     </> : <>
       {anyRestartPending ? <p className={css.restartNotice} role="status">{t('operation.restartPending')}</p> : null}
       {!canInstall ? <CapabilityNotice profile={profile} t={t} /> : null}

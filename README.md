@@ -19,7 +19,7 @@ Automatic installs pin an immutable 40-character commit and always go through ca
 | Catalog entry | What the scanner proved | What happens on install |
 | --- | --- | --- |
 | **Automatic install** | Every install target (entry files, patch) exists in the pinned commit's git tree | `pnpm add --ignore-scripts` — third-party lifecycle scripts never run |
-| **Needs script review** | Targets are absent (build output not shipped), but the package declares lifecycle scripts | Scripts are shown **verbatim** in the review step; after your explicit consent, the Host grants exactly `'name@pinned-spec': true` in the profile's `allowBuilds` and installs without `--ignore-scripts`. The grant covers only the reviewed commit and is revoked on removal |
+| **Needs script review** | Targets are absent (build output not shipped), but the package declares lifecycle scripts | Scripts are shown **verbatim** in the review step; after your explicit consent, the Host installs once with `--allow-build=<name>` instead of `--ignore-scripts`, scoping script execution to exactly the reviewed package within that single invocation. Nothing is written to `allowBuilds`; consent is never persisted (requires pnpm ≥ 11.7) |
 | **Manual install** | Neither of the above | Repository link only; the marketplace never runs anything |
 
 ## Solution packs
@@ -36,13 +36,18 @@ A pack is a curated list of plugin repositories — nothing more. A repository b
 ```
 
 - `items` holds 1–50 `owner/repo` strings; resolution to stable repository ids happens at scan time against the catalog itself, so renames never rewrite identity silently.
-- The marketplace shows every item's explicit status — *will auto-install*, *needs script review*, *manual install*, *not in catalog*, *already installed* — and an honest `install N of M` count.
+- The marketplace shows every item's explicit status — *will auto-install*, *needs script review*, *manual install*, *not in catalog*, *already installed* — and an honest `install N of M` count. Pack cards also disclose the install composition up front (`7 one-click · 2 script-review · 1 manual`), computed from catalog truth at scan time.
 - Installing a pack runs the normal single-plugin plan→execute path serially, stops at the first failure, rolls nothing back, and reports each item's outcome.
 - **Packs grant no privilege**: script-gated items still require their own per-plugin review and consent; manual items stay manual.
+- **Packs are never ranked by stars.** Star ranking would reward stuffing a pack with the most-starred plugins — a star-sorted category view in disguise, not curation. Order is editorial first (packs reviewed by the marketplace maintainers for coherence and honesty, listed in `FEATURED_MARKETPLACE_PACKS`), then freshness. Curation follows 宁缺毋滥: a missing capability slot stays empty rather than being filled with an unproven plugin.
+
+## Privacy stance
+
+The marketplace is **read-only against a static catalog and never phones home**: no install counts, no telemetry, no analytics endpoint. There is deliberately no server to collect them — the catalog is plain JSON on GitHub Pages, and every install decision happens on your machine. Popularity signals come from GitHub's own public data (stars), nothing else.
 
 ## For plugin authors
 
-To be discoverable, your repository needs the `dsh-plugin` topic, a `package.json` declaring `dsh.bundle.patch`, and a valid `cordis.patch.yml`. Optional `dsh-category-theme|ui|tool|memory` topics set your catalog category.
+To be discoverable, your repository needs the `dsh-plugin` topic, a `package.json` declaring `dsh.bundle.patch`, and a valid `cordis.patch.yml`. An optional `dsh-category-theme|memory|usage|skill|security|channel|ui|tool|provider` topic sets your catalog category explicitly; without one, conservative whole-word tokens take a guess, and a plugin with no honest signal stays *uncategorized* rather than being misfiled.
 
 **To qualify for automatic install**, the files your bundle loads must exist in the git tree at the pinned commit — commit your built output (e.g. `lib/`), the way this repository does. If built output is intentionally not committed and your `prepare`/`install` scripts produce it, users will see your scripts verbatim and can consent to run them per install; the consent never extends beyond the reviewed commit.
 
@@ -140,7 +145,7 @@ pnpm pack --dry-run
 | 目录条目 | 扫描器证明的内容 | 安装行为 |
 | --- | --- | --- |
 | **可自动安装** | 所有安装目标（入口文件、patch）在固定 commit 的 git tree 中存在 | `pnpm add --ignore-scripts`，第三方生命周期脚本绝不运行 |
-| **需确认脚本** | 目标缺失（未随仓库提交构建产物）但声明了生命周期脚本 | 审核页**逐字展示**脚本内容；你显式勾选同意后，Host 才在 profile 的 `allowBuilds` 写入精确的 `'name@固定spec': true` 授权并不带 `--ignore-scripts` 安装。授权只覆盖本次审阅的 commit，卸载时自动撤销 |
+| **需确认脚本** | 目标缺失（未随仓库提交构建产物）但声明了生命周期脚本 | 审核页**逐字展示**脚本内容；你显式勾选同意后，Host 以 `--allow-build=<包名>` 替代 `--ignore-scripts` 执行一次安装，脚本执行被精确限定在本次调用的这一个包上。不写入 `allowBuilds`，同意永不持久化（需要 pnpm ≥ 11.7） |
 | **手动安装** | 以上都不满足 | 只展示仓库链接，市场不执行任何内容 |
 
 ## 整合方案（Solution Packs）
@@ -157,13 +162,18 @@ pnpm pack --dry-run
 ```
 
 - `items` 为 1–50 个 `owner/repo`；扫描时解析为稳定的仓库 id，改名不会造成身份错配。
-- 市场逐项显式标注：将自动安装 / 需确认脚本 / 需手动安装 / 未收录 / 已在 profile 中，并给出诚实的“可安装 N/M”计数。
+- 市场逐项显式标注：将自动安装 / 需确认脚本 / 需手动安装 / 未收录 / 已在 profile 中，并给出诚实的“可安装 N/M”计数。整合包卡片还会前置展示安装构成（如“7 一键 · 2 需审脚本 · 1 手动”），由扫描时的目录事实计算。
 - 安装整合包 = 串行复用单插件的 plan→execute 路径，首个失败即停止、不回滚、逐项报告结果。
 - **整合包不放权**：需确认脚本的插件仍需进入其详情页单独审阅同意；手动项保持手动。
+- **整合包永不按 star 排序。** star 排序只会奖励“把最高星插件塞进包里”的行为——那是换了皮的 star 榜单，不是策展。排序为编辑精选优先（由市场维护者审阅一致性与诚实度后列入 `FEATURED_MARKETPLACE_PACKS`），其余按新鲜度。策展宁缺毋滥：能力空缺就空着，不用未经验证的插件凑数。
+
+## 隐私立场
+
+本市场**只读静态目录，永不回传**：不统计安装次数、没有遥测、没有分析端点——也刻意没有可以收集它们的服务器，目录就是 GitHub Pages 上的一份 JSON，每个安装决定都发生在你自己机器上。流行度信号只来自 GitHub 公开数据（stars)，仅此而已。
 
 ## 插件作者指南
 
-可被收录的条件：仓库携带 `dsh-plugin` topic、`package.json` 声明 `dsh.bundle.patch`、且 `cordis.patch.yml` 有效。可选 `dsh-category-theme|ui|tool|memory` topic 决定目录分类。
+可被收录的条件：仓库携带 `dsh-plugin` topic、`package.json` 声明 `dsh.bundle.patch`、且 `cordis.patch.yml` 有效。可选 `dsh-category-theme|memory|usage|skill|security|channel|ui|tool|provider` topic 显式决定目录分类；没有声明时由保守整词匹配推断，没有任何可靠信号的插件诚实地留在“未分类”。
 
 **获得自动安装资格**：让你的 bundle 要加载的文件存在于固定 commit 的 git tree 中——把构建产物（如 `lib/`）提交进仓库（本仓库即如此）。若刻意不提交构建产物、由 `prepare`/`install` 脚本生成，用户会在安装前逐字看到脚本并可选择按次同意；同意范围永不超出被审阅的 commit。
 

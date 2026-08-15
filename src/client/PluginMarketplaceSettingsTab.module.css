@@ -524,17 +524,6 @@ a.secondaryButton {
   line-height: 20px;
 }
 
-.packSection {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.packSection .externalHeading {
-  margin: 0;
-}
-
 .packGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

@@ -152,11 +152,15 @@ describe('MarketplaceProfileOperations', () => {
     const replay = operations.plan({ repositoryId: '123456', action: 'install' })
     const result = await operations.execute({ planId: replay.planId!, allowScripts: true })
     expect(result).toMatchObject({ status: 'succeeded', code: 'succeeded' })
-    // Scripts run without --ignore-scripts, gated by an exact name@spec grant.
-    expect(calls).toEqual([['add', '--save-exact', entry.source.ref]])
+    // Scripts run without --ignore-scripts, scoped to the reviewed package by
+    // --allow-build; ignored transitive builds stay a non-fatal warning. No
+    // persistent grant is written anywhere.
+    expect(calls).toEqual([[
+      'add', '--save-exact', `--allow-build=${entry.package.name!}`,
+      '--config.strict-dep-builds=false', entry.source.ref,
+    ]])
     const workspace = await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')
-    expect(workspace).toContain('allowBuilds:')
-    expect(workspace).toContain(`'@example/dsh-weather-bundle@${entry.source.ref}': true`)
+    expect(workspace).not.toContain('allowBuilds')
     // Provenance records that this install ran scripts.
     const records = JSON.parse(
       await readFile(join(runtime.dir, 'dsh-plugin-marketplace.installs.json'), 'utf8'),
@@ -164,19 +168,11 @@ describe('MarketplaceProfileOperations', () => {
     expect(records.installs['@example/dsh-weather-bundle']?.scripts).toBe(true)
   })
 
-  it('revokes the script grant when the package leaves the profile, keeping other grants', async () => {
+  it('leaves pnpm-workspace.yaml untouched when a scripted package leaves the profile', async () => {
     const catalog = catalogFixture()
     const entry = catalog.entries[0]!
     const runtime = await stageActiveProfile(catalog)
-    await writeFile(join(runtime.dir, 'pnpm-workspace.yaml'), [
-      'packages: []',
-      'nodeLinker: hoisted',
-      '',
-      'allowBuilds:',
-      `  '@example/dsh-weather-bundle@${entry.source.ref}': true`,
-      "  '@other/tool@1.0.0': true",
-      '',
-    ].join('\n'))
+    const before = await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')
     const operations = new MarketplaceProfileOperations({
       runtime,
       catalog: () => catalog,
@@ -196,40 +192,8 @@ describe('MarketplaceProfileOperations', () => {
     await expect(operations.execute({ planId: remove.planId! })).resolves.toMatchObject({
       status: 'succeeded', action: 'remove',
     })
-    const workspace = await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')
-    expect(workspace).not.toContain('@example/dsh-weather-bundle@')
-    expect(workspace).toContain("'@other/tool@1.0.0': true")
-    expect(workspace).toContain('allowBuilds:')
-  })
-
-  it('refuses to run scripts when the consent grant cannot be written', async () => {
-    const runtime = await stageProfile()
-    // An inline allowBuilds layout is unsupported: the grant write must fail
-    // before pnpm runs anything, not install a package whose build never ran.
-    await writeFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'packages: []\nallowBuilds: {}\n')
-    const scripted = catalogFixture({
-      entries: [{
-        ...catalogFixture().entries[0]!,
-        installability: 'manual',
-        installScripts: { prepare: 'node build.js' },
-      }],
-    })
-    const calls: string[][] = []
-    const operations = new MarketplaceProfileOperations({
-      runtime,
-      catalog: () => scripted,
-      capabilities,
-      runPnpm: async (args) => {
-        calls.push([...args])
-        return { exitCode: 0, unavailable: false }
-      },
-    })
-    const plan = operations.plan({ repositoryId: '123456', action: 'install' })
-    await expect(operations.execute({ planId: plan.planId!, allowScripts: true })).resolves.toMatchObject({
-      status: 'failed', code: 'profile-write-failed', rollback: 'succeeded',
-    })
-    // The only pnpm invocation is the rollback repair; the install never ran.
-    expect(calls).toEqual([['install', '--ignore-scripts']])
+    // Consent was never persisted, so removal has nothing to revoke.
+    expect(await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(before)
   })
 
   it('restores the profile and repairs dependencies when pnpm fails', async () => {
