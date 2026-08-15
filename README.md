@@ -76,6 +76,18 @@ A pack is a curated list of plugin repositories — nothing more. A repository b
 
 Ratings borrow GitHub's native reactions: every catalog plugin gets a ballot comment under the [ratings issue](https://github.com/w2112515/dsh-plugin-marketplace/issues/1), and a 👍/👎 reaction on it is a vote — one vote per real GitHub account. Detail pages show an overall window plus a trailing 90-day window, and **no verdict appears below 10 votes**. The client is read-only; voting itself happens entirely on GitHub, so the marketplace never holds your credentials.
 
+## For agents
+
+The marketplace is agent-native: the Host plugin registers four tools the DSH agent can call in any session — `marketplace_search`, `marketplace_detail`, `marketplace_install`, and `marketplace_manual_guide`. Search and detail are read-only. Installs run the **same** plan→execute pipeline as the WebUI, and every call asks for one-time human approval with the plugin name, pinned commit, and risk signals in the prompt — consent is never persisted and never bulk-granted. Script-gated entries are refused by design (verbatim script review stays in Settings → Plugins → Marketplace); manual entries are never executed by the marketplace — the guide tool fetches the repository's own install instructions for the agent to follow with its ordinary shell tools. Plugins activate after a `dsh web` restart. Set `agentTools: false` in the bundle config to disable the agent surface.
+
+An agent can also install the marketplace itself with its ordinary shell tool:
+
+```powershell
+dsh plugin --profile web add github:w2112515/dsh-plugin-marketplace#<40-char-commit>
+dsh --profile web --dump-config   # verify the bundle layer
+# restart dsh web to activate
+```
+
 ## Privacy stance
 
 The marketplace is **read-only against a static catalog and never phones home**: no install counts, no telemetry, no analytics endpoint. There is deliberately no server to collect them — the catalog is plain JSON on GitHub Pages, and every install decision happens on your machine. Popularity signals come from GitHub's own public data (stars), nothing else.

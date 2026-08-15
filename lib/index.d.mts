@@ -10,6 +10,8 @@ interface Config {
   readonly maxAgeMs: number;
   readonly timeoutMs: number;
   readonly maxBytes: number;
+  /** Register the agent-facing marketplace tools (search/detail/install/manual-guide). */
+  readonly agentTools: boolean;
 }
 declare const Config: z<Config>;
 /** Mount the external bundle against public Host services only. */

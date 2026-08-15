@@ -99,6 +99,7 @@ describe('out-of-tree Host API', () => {
       maxAgeMs: 48 * 60 * 60 * 1000,
       timeoutMs: 5_000,
       maxBytes: 1_000_000,
+      agentTools: false,
     }
     await apply(ctx, config)
     expect(route).not.toBeNull()

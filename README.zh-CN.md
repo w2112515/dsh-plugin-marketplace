@@ -76,6 +76,18 @@ dsh web
 
 评分借用 GitHub 原生 reaction：目录中每个插件在[评分 issue](https://github.com/w2112515/dsh-plugin-marketplace/issues/1) 下有一条投票评论，点 👍/👎 即投票——一票对应一个真实 GitHub 账号。详情页展示总评分与近 90 天两个窗口，**不满 10 票不出结论**。客户端只读，投票全程发生在 GitHub 上，市场绝不持有你的凭据。
 
+## 面向 Agent
+
+市场对 agent 原生开放：Host 插件注册四个工具，DSH agent 在任何会话中都可以调用——`marketplace_search`、`marketplace_detail`、`marketplace_install`、`marketplace_manual_guide`。搜索与详情是只读的；安装走与 WebUI **完全相同**的 plan→execute 管线，且每次调用都要求人工一次性批准——批准提示中带有插件名、固定 commit 与风险信号——同意绝不持久化、绝不批量代授。需脚本审阅的条目会被设计性拒绝（逐字审阅留在「设置 → 插件 → 插件市场」）；手动条目市场绝不执行——guide 工具仅抓取该仓库自己的安装说明，交给 agent 用普通 shell 工具在会话既有权限下执行。插件安装后需重启 `dsh web` 生效。在 bundle 配置中设 `agentTools: false` 可关闭 agent 面。
+
+Agent 也可以用普通 shell 工具安装市场本身：
+
+```powershell
+dsh plugin --profile web add github:w2112515/dsh-plugin-marketplace#<40位commit>
+dsh --profile web --dump-config   # 验证 bundle 层
+# 重启 dsh web 生效
+```
+
 ## 隐私立场
 
 本市场**只读静态目录，永不回传**：不统计安装次数、没有遥测、没有分析端点——也刻意没有可以收集它们的服务器，目录就是 GitHub Pages 上的一份 JSON，每个安装决定都发生在你自己机器上。流行度信号只来自 GitHub 公开数据（stars），仅此而已。

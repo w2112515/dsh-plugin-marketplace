@@ -7,6 +7,7 @@ import { readProfileManifest } from '@deepseek-ai/dsh-app-boot'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
+import { applyMarketplaceAgentTools } from './agent-tools.ts'
 import { MarketplaceCatalogClient } from './catalog-client.ts'
 import { detailMarketplaceEntry, detailMarketplacePack, installedMarketplacePlugins, listMarketplacePacks, MARKETPLACE_CATEGORY_PRIORITY, queryMarketplaceCatalog } from './catalog-query.ts'
 import {
@@ -30,13 +31,15 @@ export {
 } from './catalog.ts'
 
 export const name = 'plugin-marketplace'
-export const inject = ['webServer']
+export const inject = ['webServer', 'tools', 'systemPrompt']
 
 export interface Config {
   readonly catalogUrl: string
   readonly maxAgeMs: number
   readonly timeoutMs: number
   readonly maxBytes: number
+  /** Register the agent-facing marketplace tools (search/detail/install/manual-guide). */
+  readonly agentTools: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -44,6 +47,7 @@ export const Config: z<Config> = z.object({
   maxAgeMs: z.natural().min(1).default(48 * 60 * 60 * 1000),
   timeoutMs: z.natural().min(1).default(15_000),
   maxBytes: z.natural().min(1).default(5_000_000),
+  agentTools: z.boolean().default(true),
 })
 
 const API_PATH = '/api/plugin-marketplace'
@@ -256,6 +260,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
 
   ctx.effect(() => disposeRoute, 'plugin-marketplace.api')
+
+  if (config.agentTools) {
+    applyMarketplaceAgentTools(ctx, {
+      catalog: () => catalog.view(),
+      operations,
+      capabilities,
+    })
+  }
   ctx.effect(() => async () => {
     await operations.close()
     await catalog.close()
