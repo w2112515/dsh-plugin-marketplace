@@ -153,10 +153,13 @@ describe('MarketplaceProfileOperations', () => {
     const result = await operations.execute({ planId: replay.planId!, allowScripts: true })
     expect(result).toMatchObject({ status: 'succeeded', code: 'succeeded' })
     // Scripts run without --ignore-scripts, scoped to the reviewed package by
-    // --allow-build; ignored transitive builds stay a non-fatal warning. No
-    // persistent grant is written anywhere.
+    // allow-build keys pnpm actually matches for git-hosted deps: the exact
+    // codeload tarball resolution plus the hashless repo form. Ignored
+    // transitive builds stay a non-fatal warning. No grant is persisted.
     expect(calls).toEqual([[
-      'add', '--save-exact', `--allow-build=${entry.package.name!}`,
+      'add', '--save-exact',
+      `--allow-build=${entry.package.name!}@https://codeload.github.com/example/dsh-weather-bundle/tar.gz/${entry.repository.commitSha!}`,
+      `--allow-build=${entry.package.name!}@git+https://github.com/example/dsh-weather-bundle.git`,
       '--config.strict-dep-builds=false', entry.source.ref,
     ]])
     const workspace = await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')

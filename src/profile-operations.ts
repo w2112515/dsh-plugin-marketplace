@@ -397,6 +397,24 @@ function hasExactReviewedSource(entry: MarketplaceCatalogEntry): boolean {
   return entry.source.ref === `git+https://github.com/${entry.repository.fullName}.git#${commitSha}`
 }
 
+/**
+ * allow-build keys that actually authorize a git-hosted dep's prepare. pnpm
+ * matches allowBuilds against the resolved depPath, and a bare package name
+ * never matches a non-semver resolution (trustPackageIdentity stays false at
+ * the git-prepare call site). A pinned GitHub ref is fetched as a codeload
+ * tarball, so the exact tarball key is the form pnpm itself demands; the
+ * hashless repo key (pnpm >= 11.15) additionally covers the clone fallback.
+ */
+function allowBuildFlags(packageName: string, sourceRef: string): string[] {
+  const match = /^git\+https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)\.git#([0-9a-f]{40})$/i.exec(sourceRef)
+  if (match === null) return [`--allow-build=${packageName}`]
+  const [, repoPath, sha] = match
+  return [
+    `--allow-build=${packageName}@https://codeload.github.com/${repoPath}/tar.gz/${sha}`,
+    `--allow-build=${packageName}@git+https://github.com/${repoPath}.git`,
+  ]
+}
+
 /** Owns one-at-a-time profile mutations and rollback for the running Web profile. */
 export class MarketplaceProfileOperations {
   private readonly plans = new Map<MarketplacePlanId, StoredPlan>()
@@ -641,16 +659,21 @@ export class MarketplaceProfileOperations {
       backup(join(this.options.runtime.dir, WORKSPACE_FILE)),
     ])
     // Plain installs pass --ignore-scripts so third-party hooks never execute.
-    // A consented install drops it exactly once and instead passes
-    // --allow-build=<name>, scoping pnpm's script execution to the reviewed
-    // package within this single invocation — consent itself is enforced by
-    // this manager (per name@pin, scripts reviewed verbatim), never persisted
-    // to the profile. --config.strict-dep-builds=false keeps ignored transitive
-    // dependency builds a warning instead of a fatal error (pnpm ≥ 11.7).
+    // A consented install drops it exactly once and instead passes allow-build
+    // keys for the reviewed name@pin — bare names never match git-hosted deps,
+    // so the keys target the exact codeload tarball and repo forms pnpm checks.
+    // Consent itself is enforced by this manager (per name@pin, scripts reviewed
+    // verbatim), never persisted to the profile. --config.strict-dep-builds=false
+    // keeps ignored transitive dependency builds a warning instead of a fatal
+    // error (pnpm >= 11.7).
     const args = plan.action === 'remove'
       ? ['remove', packageName]
       : plan.requiresScripts
-        ? ['add', '--save-exact', `--allow-build=${packageName}`, '--config.strict-dep-builds=false', plan.sourceRef as string]
+        ? [
+            'add', '--save-exact',
+            ...allowBuildFlags(packageName, plan.sourceRef as string),
+            '--config.strict-dep-builds=false', plan.sourceRef as string,
+          ]
         : ['add', '--ignore-scripts', '--save-exact', plan.sourceRef as string]
     const command = await this.runPnpm(args, this.options.runtime.dir, signal)
     if (this.disposed) {
