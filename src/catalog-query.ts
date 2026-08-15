@@ -23,17 +23,27 @@ export const MARKETPLACE_PAGE_SIZE = 50
 const ACTIVE_WINDOW_MS = 180 * 24 * 60 * 60 * 1000
 
 /** Fixed taxonomy priority: the first matching category wins, one chip per row. */
-export const MARKETPLACE_CATEGORY_PRIORITY: readonly MarketplaceCategory[] = ['theme', 'memory', 'ui', 'tool']
+export const MARKETPLACE_CATEGORY_PRIORITY: readonly MarketplaceCategory[] = [
+  'theme', 'memory', 'usage', 'skill', 'security', 'channel', 'ui', 'tool', 'provider',
+]
 
 /**
  * Conservative fallback tokens matched against whole words from topics, keywords,
- * and repository/package names. Anything unmatched stays honestly uncategorized.
+ * and repository/package names. Precision beats recall: a wrong chip is worse
+ * than an honest "uncategorized", so attributive product names (codex, claude,
+ * openai — "Codex-style pet", "import Claude sessions") never classify.
  */
 const CATEGORY_TOKENS: Readonly<Record<MarketplaceCategory, readonly string[]>> = {
   theme: ['theme', 'themes', 'skin', 'skins', 'color-scheme', 'colour-scheme', 'appearance'],
   memory: ['memory', 'memories', 'rag', 'embedding', 'embeddings', 'vector', 'vectors', 'knowledge', 'recall'],
-  ui: ['ui', 'tui', 'gui', 'webui', 'sidebar', 'dashboard', 'panel', 'interface', 'layout'],
-  tool: ['tool', 'tools', 'mcp', 'ocr', 'vision', 'terminal', 'cli', 'automation', 'notify', 'notification'],
+  usage: ['usage', 'balance', 'billing', 'quota', 'cost', 'costs', 'metering', 'spend'],
+  skill: ['skill', 'skills'],
+  security: ['security', 'audit', 'audits', 'approval', 'approvals', 'sandbox', 'permission', 'permissions', 'policy'],
+  channel: ['feishu', 'lark', 'telegram', 'discord', 'wechat', 'dingtalk', 'slack', 'qq', 'qqbot'],
+  ui: ['ui', 'tui', 'gui', 'webui', 'sidebar', 'dashboard', 'panel', 'interface', 'layout', 'pet', 'pets', 'widget', 'widgets'],
+  tool: ['tool', 'tools', 'mcp', 'ocr', 'vision', 'terminal', 'cli', 'automation', 'notify', 'notification',
+    'workflow', 'workflows', 'scheduler', 'session', 'sessions'],
+  provider: ['provider', 'providers', 'openrouter', 'oauth'],
 }
 
 const CATEGORY_DECLARATION = /^dsh-category-([a-z-]+)$/u
@@ -187,12 +197,10 @@ export function queryMarketplaceCatalog(
     all: admitted.length,
     oneClick: admitted.filter(entry => entry.installability === 'one-click-eligible').length,
     manual: admitted.filter(entry => entry.installability === 'manual').length,
-    categories: {
-      theme: categorized.filter(item => item.category === 'theme').length,
-      memory: categorized.filter(item => item.category === 'memory').length,
-      ui: categorized.filter(item => item.category === 'ui').length,
-      tool: categorized.filter(item => item.category === 'tool').length,
-    },
+    categories: Object.fromEntries(MARKETPLACE_CATEGORY_PRIORITY.map(category => [
+      category,
+      categorized.filter(item => item.category === category).length,
+    ])) as Record<MarketplaceCategory, number>,
     uncategorized: categorized.filter(item => item.category === null).length,
   }
   const words = normalizedWords(request.query)

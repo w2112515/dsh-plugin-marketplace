@@ -170,7 +170,9 @@ export interface MarketplaceCatalogView {
 }
 
 /** Coarse Host-owned taxonomy derived from declared topics, keywords, and names. */
-export type MarketplaceCategory = 'theme' | 'ui' | 'tool' | 'memory'
+export type MarketplaceCategory =
+  | 'theme' | 'ui' | 'tool' | 'memory'
+  | 'provider' | 'usage' | 'skill' | 'security' | 'channel'
 
 /** Category segment: one taxonomy slug, entries without a derivable category, or everything. */
 export type MarketplaceCategoryFilter = MarketplaceCategory | 'uncategorized' | 'all'

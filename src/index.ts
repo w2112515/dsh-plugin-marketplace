@@ -8,7 +8,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { MarketplaceCatalogClient } from './catalog-client.ts'
-import { detailMarketplaceEntry, detailMarketplacePack, installedMarketplacePlugins, listMarketplacePacks, queryMarketplaceCatalog } from './catalog-query.ts'
+import { detailMarketplaceEntry, detailMarketplacePack, installedMarketplacePlugins, listMarketplacePacks, MARKETPLACE_CATEGORY_PRIORITY, queryMarketplaceCatalog } from './catalog-query.ts'
 import {
   detectMarketplaceOperationCapabilities,
   MarketplaceProfileOperations,
@@ -128,7 +128,7 @@ function executeRequest(value: unknown): MarketplaceExecuteRequest {
 }
 
 const INSTALLABILITY_FILTERS = new Set(['all', 'one-click-eligible', 'manual'])
-const CATEGORY_FILTERS = new Set(['all', 'theme', 'ui', 'tool', 'memory', 'uncategorized'])
+const CATEGORY_FILTERS = new Set(['all', 'uncategorized', ...MARKETPLACE_CATEGORY_PRIORITY])
 const SORTS = new Set(['recommended', 'stars', 'recently-updated', 'recently-added'])
 
 function listRequest(value: unknown): MarketplaceListRequest {

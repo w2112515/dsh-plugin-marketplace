@@ -129,7 +129,7 @@ interface MarketplaceCatalogView {
   readonly error: MarketplaceCatalogError | null;
 }
 /** Coarse Host-owned taxonomy derived from declared topics, keywords, and names. */
-type MarketplaceCategory = 'theme' | 'ui' | 'tool' | 'memory';
+type MarketplaceCategory = 'theme' | 'ui' | 'tool' | 'memory' | 'provider' | 'usage' | 'skill' | 'security' | 'channel';
 /** Category segment: one taxonomy slug, entries without a derivable category, or everything. */
 type MarketplaceCategoryFilter = MarketplaceCategory | 'uncategorized' | 'all';
 /** Installability segment selected by the Marketplace browser. */

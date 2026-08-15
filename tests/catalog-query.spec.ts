@@ -126,13 +126,31 @@ describe('catalog query', () => {
     expect(deriveMarketplaceCategory(entry(8))).toBeNull()
   })
 
+  it('covers the expanded taxonomy and never classifies attributive product names', () => {
+    expect(deriveMarketplaceCategory(entry(1, { topics: ['dsh-plugin', 'token-usage'] }))).toBe('usage')
+    expect(deriveMarketplaceCategory(entry(2, { keywords: ['billing'] }))).toBe('usage')
+    expect(deriveMarketplaceCategory(entry(3, { repository: { ...entry(3).repository, fullName: 'acme/dsh-qqbot' } }))).toBe('channel')
+    expect(deriveMarketplaceCategory(entry(4, { keywords: ['openrouter'] }))).toBe('provider')
+    expect(deriveMarketplaceCategory(entry(5, { keywords: ['oauth'] }))).toBe('provider')
+    expect(deriveMarketplaceCategory(entry(6, { keywords: ['skills'] }))).toBe('skill')
+    expect(deriveMarketplaceCategory(entry(7, { topics: ['dsh-plugin', 'security'] }))).toBe('security')
+    expect(deriveMarketplaceCategory(entry(8, { keywords: ['pet'] }))).toBe('ui')
+    expect(deriveMarketplaceCategory(entry(9, { keywords: ['session'] }))).toBe('tool')
+    // "Codex-style pet" / "import Claude sessions" are attributive uses; product
+    // names alone never mean provider access.
+    expect(deriveMarketplaceCategory(entry(10, { keywords: ['codex'] }))).toBeNull()
+    expect(deriveMarketplaceCategory(entry(11, { keywords: ['claude'] }))).toBeNull()
+    // Provider is the residual category: any concrete identity wins first.
+    expect(deriveMarketplaceCategory(entry(12, { keywords: ['skills', 'openrouter'] }))).toBe('skill')
+  })
+
   it('filters by category and reports per-category counts before the segment', () => {
     const theme = entry(1, { topics: ['dsh-plugin', 'dsh-category-theme'] })
     const ui = entry(2, { repository: { ...entry(2).repository, fullName: 'acme/dsh-web-ui' } })
     const plain = entry(3)
     const catalogView = view([theme, ui, plain])
     const result = queryMarketplaceCatalog(catalogView, defaultRequest)
-    expect(result.counts.categories).toEqual({ theme: 1, memory: 0, ui: 1, tool: 0 })
+    expect(result.counts.categories).toEqual({ theme: 1, memory: 0, ui: 1, tool: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 })
     expect(result.counts.uncategorized).toBe(1)
     expect(result.items[0]?.repositoryCreatedAt).toBe('2026-07-01T00:00:00.000Z')
     expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, category: 'theme' }).items.map(item => item.repositoryId)).toEqual(['1'])

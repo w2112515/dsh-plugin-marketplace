@@ -61,6 +61,8 @@ function requestFor(query: string, category: CategoryFilter, filter: InstallFilt
 
 const CATEGORY_KEYS = {
   theme: 'category.theme', ui: 'category.ui', tool: 'category.tool', memory: 'category.memory',
+  provider: 'category.provider', usage: 'category.usage', skill: 'category.skill',
+  security: 'category.security', channel: 'category.channel',
 } satisfies Record<MarketplaceCategory, PluginMarketplaceLocaleKey>
 
 const ACTION_KEYS = {

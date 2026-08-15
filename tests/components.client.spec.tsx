@@ -75,7 +75,7 @@ const summaryPlugin = {
 function listModel(page = 1): MarketplaceListModel {
   return {
     digest: `digest-${page}`, catalogStatus: 'ready', source: 'cache', stale: false, generatedAt: '2026-08-14T00:00:00.000Z', lastSuccessfulFetchAt: '2026-08-14T00:00:00.000Z',
-    total: 51, counts: { all: 51, oneClick: 50, manual: 1, categories: { theme: 0, ui: 0, tool: 1, memory: 0 }, uncategorized: 50 }, page, pageCount: 2, error: null,
+    total: 51, counts: { all: 51, oneClick: 50, manual: 1, categories: { theme: 0, ui: 0, tool: 1, memory: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 }, uncategorized: 50 }, page, pageCount: 2, error: null,
     items: [{ ...rowItem, id: `plugin-${page}`, name: page === 1 ? 'Weather Bundle' : 'Second page plugin' }],
   }
 }
@@ -253,7 +253,7 @@ describe('PluginMarketplaceSettingsTab', () => {
       catalogStatus: 'unavailable' as const,
       source: 'none' as const,
       total: 0,
-      counts: { all: 0, oneClick: 0, manual: 0, categories: { theme: 0, ui: 0, tool: 0, memory: 0 }, uncategorized: 0 },
+      counts: { all: 0, oneClick: 0, manual: 0, categories: { theme: 0, ui: 0, tool: 0, memory: 0, provider: 0, usage: 0, skill: 0, security: 0, channel: 0 }, uncategorized: 0 },
       pageCount: 0,
       items: [],
       error: { code: 'network-error' as const, message: 'offline', retryable: true },
