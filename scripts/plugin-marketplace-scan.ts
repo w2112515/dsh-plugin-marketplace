@@ -605,11 +605,15 @@ async function validateRepository(
     }
   }
 
+  // A scanner-version change means the rules changed: replay validation on
+  // fresh content. Reusing ETags here would carry the old rules' verdicts
+  // forward behind 304s without ever re-parsing the files.
+  const reusable = previous !== undefined && previous.validatorVersion === MARKETPLACE_SCANNER_VERSION
   const manifest = await client.getContent(
     repository.fullName,
     'package.json',
     commitSha ?? repository.defaultBranch,
-    previous?.packageEtag ?? null,
+    reusable ? previous?.packageEtag ?? null : null,
   )
   let metadata: PackageMetadata
   if (manifest.status === 'not-found') {
@@ -652,7 +656,7 @@ async function validateRepository(
     repository.fullName,
     metadata.patchPath,
     commitSha ?? repository.defaultBranch,
-    previous?.entry.source.patchPath === metadata.patchPath ? previous.patchEtag : null,
+    reusable && previous?.entry.source.patchPath === metadata.patchPath ? previous?.patchEtag ?? null : null,
   )
   let code: MarketplaceValidationCode
   if (patch.status === 'not-found') code = 'patch-missing'

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -370,6 +370,33 @@ describe('plugin marketplace scanner', () => {
     })
     expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/dynamic-patch'))?.validation)
       .toMatchObject({ status: 'valid', code: 'valid-bundle' })
+  })
+
+  it('replays validation on fresh content when the scanner version changes, ignoring ETags', async () => {
+    const files = await paths()
+    const repositories = [repository(1, 'valid')]
+    await runMarketplaceScan({
+      client: new FixtureGitHub(repositories),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    // Simulate a scanner upgrade: the persisted state predates the current rules.
+    const state = JSON.parse(await readFile(files.statePath, 'utf8')) as {
+      repositories: Record<string, { validatorVersion: string }>
+    }
+    state.repositories['1']!.validatorVersion = 'ancient'
+    await writeFile(files.statePath, JSON.stringify(state))
+    const second = new FixtureGitHub(repositories)
+    second.notModified = true // any conditional request would 304; none may be sent
+    await runMarketplaceScan({
+      client: second,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    expect(second.contentCalls.filter(call => call.includes('/valid/')))
+      .toEqual(['fixture/valid/package.json', 'fixture/valid/cordis.patch.yml'])
   })
 
   it('carries forward a repository search missed, and revalidates it after a push', async () => {
