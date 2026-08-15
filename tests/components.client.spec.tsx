@@ -262,6 +262,34 @@ describe('PluginMarketplaceSettingsTab', () => {
     expect(screen.queryByText('👍 100%')).toBeNull()
   })
 
+  it('links every row with an open vote channel straight to its ballot comment', async () => {
+    const votable = { ...rowItem, id: 'p-vote', name: 'Votable Plugin', voteUrl: 'https://github.com/example/marketplace/issues/7#issuecomment-42' }
+    const channelless = { ...rowItem, id: 'p-quiet', name: 'Channelless Plugin', voteUrl: null }
+    const list = { ...listModel(), items: [votable, channelless] }
+    renderTab({
+      bootstrap: vi.fn(async () => ({ list, operations: operationSnapshot })),
+      list: vi.fn(async () => list),
+    })
+    await screen.findByText('Votable Plugin')
+    const links = screen.getAllByRole('link', { name: 'Rate' })
+    expect(links).toHaveLength(1)
+    expect(links[0]?.getAttribute('href')).toBe('https://github.com/example/marketplace/issues/7#issuecomment-42')
+  })
+
+  it('offers the vote link on installed rows too — installed users cast the weightiest ballots', async () => {
+    const snapshotWithPlugin: MarketplaceOperationSnapshot = { ...operationSnapshot, plugins: [activeState] }
+    renderTab({
+      bootstrap: vi.fn(async () => ({ list: listModel(), operations: snapshotWithPlugin })),
+      installed: vi.fn(async () => installedModel([
+        { state: activeState, plugin: { ...summaryPlugin, voteUrl: 'https://github.com/example/marketplace/issues/7#issuecomment-42' } },
+      ])),
+    })
+    await screen.findByText('Weather Bundle')
+    fireEvent.click(screen.getByRole('button', { name: /^Installed/ }))
+    const link = await screen.findByRole('link', { name: 'Rate' })
+    expect(link.getAttribute('href')).toBe('https://github.com/example/marketplace/issues/7#issuecomment-42')
+  })
+
   it('shows Steam-style overall and recent rating lines with a GitHub vote link on detail', async () => {
     const ratedDetail: MarketplacePluginDetailModel = {
       ...detail,

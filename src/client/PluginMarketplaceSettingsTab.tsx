@@ -181,6 +181,9 @@ function PluginRow({ plugin, state, t, onOpen, onInstall, rowRef, canInstall }: 
       </span>
     </button>
     <div className={css.rowAction}>
+      {plugin.voteUrl !== null
+        ? <a className={css.voteLink} href={plugin.voteUrl} target="_blank" rel="noreferrer noopener" title={t('rating.hint')}>{t('rating.voteShort')}<IconRightUpOutline14 aria-hidden="true" /></a>
+        : null}
       {state !== undefined
         ? <><span className={css.stateBadge}>{t(STATE_KEYS[state.state])}</span><button type="button" className={css.secondaryButton} onClick={() => { onOpen(plugin.id) }}>{t('row.manage')}</button></>
         : manual
@@ -395,6 +398,9 @@ function InstalledRow({ item, t, canInstall, onOpen, onUpdate, onRemove, onConfi
         </span>
       </span></button>}
     <div className={css.rowAction}>
+      {plugin !== null && plugin.voteUrl !== null
+        ? <a className={css.voteLink} href={plugin.voteUrl} target="_blank" rel="noreferrer noopener" title={t('rating.hint')}>{t('rating.voteShort')}<IconRightUpOutline14 aria-hidden="true" /></a>
+        : null}
       <span className={css.stateBadge}>{t(STATE_KEYS[state.state])}</span>
       {manageable && state.updateAvailable && !pending ? <button type="button" className={css.primaryButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onUpdate(state.repositoryId as string) }}>{t('operation.update')}</button> : null}
       {state.state === 'active' ? <button type="button" className={css.secondaryButton} onClick={onConfigure}>{t('operation.configure')}</button> : null}
