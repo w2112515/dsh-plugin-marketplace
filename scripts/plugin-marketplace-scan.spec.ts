@@ -209,4 +209,29 @@ describe('plugin marketplace scanner', () => {
     expect(catalog.summary.entryCount).toBe(0)
     expect(windows).toHaveLength(3)
   })
+
+  it('bisects an incomplete broad search before accepting complete child windows', async () => {
+    const files = await paths()
+    const windows: GitHubSearchWindow[] = []
+    const client: MarketplaceGitHubReader = {
+      async searchRepositories(_topic, window) {
+        windows.push(window)
+        return {
+          totalCount: 0,
+          incomplete: windows.length === 1,
+          repositories: [],
+        }
+      },
+      async getContent() { throw new Error('not reached') },
+      async resolveDefaultBranchCommits() { return {} },
+    }
+    const catalog = await runMarketplaceScan({
+      client,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(catalog.summary.entryCount).toBe(0)
+    expect(windows).toHaveLength(3)
+  })
 })

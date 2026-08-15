@@ -304,9 +304,16 @@ async function scanWindow(
   window: GitHubSearchWindow,
 ): Promise<{ repositories: GitHubRepository[]; windows: GitHubSearchWindow[] }> {
   const first = await client.searchRepositories(topic, window, 1)
-  if (first.incomplete) throw new Error(`GitHub search returned incomplete_results for ${window.start}..${window.end}`)
-  if (first.totalCount > 1_000) {
-    const split = midpoint(window)
+  if (first.incomplete || first.totalCount > 1_000) {
+    let split: string
+    try {
+      split = midpoint(window)
+    } catch (cause) {
+      if (first.incomplete) {
+        throw new Error(`GitHub search returned incomplete_results for ${window.start}..${window.end}`, { cause })
+      }
+      throw cause
+    }
     const left = await scanWindow(client, topic, { start: window.start, end: split })
     const right = await scanWindow(client, topic, { start: split, end: window.end })
     return {
