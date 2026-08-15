@@ -1,0 +1,7 @@
+node_modules/
+.cache/
+coverage/
+*.tgz
+deepseek-harness-backend/
+website/.dist/
+website/public/plugin-marketplace/catalog-v1.json

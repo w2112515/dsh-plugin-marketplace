@@ -1,0 +1,58 @@
+name: Publish plugin catalog
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: plugin-marketplace-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: .cache/plugin-marketplace
+          key: plugin-marketplace-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            plugin-marketplace-${{ runner.os }}-
+      - name: Scan dsh-plugin repositories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm run scan
+      - run: New-Item -ItemType File -Force website/public/.nojekyll
+        shell: pwsh
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/public
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
