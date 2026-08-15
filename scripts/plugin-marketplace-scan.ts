@@ -24,7 +24,7 @@ import {
   type GitHubSearchWindow,
 } from './plugin-marketplace-github.ts'
 
-export const MARKETPLACE_SCANNER_VERSION = '3'
+export const MARKETPLACE_SCANNER_VERSION = '4'
 export const DEFAULT_MARKETPLACE_TOPIC = 'dsh-plugin'
 const VALIDATION_CONCURRENCY = 12
 const STATE_SCHEMA_VERSION = 5
@@ -161,7 +161,7 @@ function explicitPackageFiles(value: unknown): string[] {
 function directPatchFileTargets(text: string): string[] | null {
   let document: unknown
   try {
-    document = yaml.load(text)
+    document = loadPatchDocument(text)
   } catch {
     return null
   }
@@ -265,10 +265,27 @@ function packageMetadataFromEntry(entry: MarketplaceCatalogEntry): PackageMetada
   }
 }
 
+/**
+ * The Loader's entry-list YAML dialect mirrored without execution: `!!js`
+ * scalars parse to inert sentinel objects, so dynamic patches validate
+ * structurally while their expressions are never run and never analyzed as
+ * file targets. Kept in sync with dsh-app-boot's entryListSchema.
+ */
+const inertJsExpr = new yaml.Type('tag:yaml.org,2002:js', {
+  kind: 'scalar',
+  resolve: data => typeof data === 'string',
+  construct: data => ({ __jsExpr: data }),
+})
+const patchYamlSchema = yaml.JSON_SCHEMA.extend(inertJsExpr)
+
+function loadPatchDocument(text: string): unknown {
+  return yaml.load(text, { schema: patchYamlSchema })
+}
+
 function patchDocumentIsValid(text: string): boolean {
   let value: unknown
   try {
-    value = yaml.load(text)
+    value = loadPatchDocument(text)
   } catch {
     return false
   }

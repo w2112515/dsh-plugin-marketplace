@@ -117,6 +117,13 @@ class FixtureGitHub implements MarketplaceGitHubReader {
         text: '- insert:\n    - id: fixture\n      name: ./lib/plugin.mjs\n',
       }
     }
+    if (fullName.endsWith('/dynamic-patch') && path === 'cordis.patch.yml') {
+      return {
+        status: 'ok',
+        etag: `"patch-${fullName}"`,
+        text: "- insert:\n    - id: fixture\n      name: fixture:plugin\n      config: !!js process.env.FIXTURE_FLAG ?? 'off'\n",
+      }
+    }
     return {
       status: 'ok',
       etag: `"patch-${fullName}"`,
@@ -350,6 +357,19 @@ describe('plugin marketplace scanner', () => {
     })
     expect(catalog.summary.entryCount).toBe(0)
     expect(windows).toHaveLength(3)
+  })
+
+  it('validates patches in the Loader dialect without executing !!js expressions', async () => {
+    const files = await paths()
+    const github = new FixtureGitHub([repository(1, 'dynamic-patch')])
+    const catalog = await runMarketplaceScan({
+      client: github,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/dynamic-patch'))?.validation)
+      .toMatchObject({ status: 'valid', code: 'valid-bundle' })
   })
 
   it('carries forward a repository search missed, and revalidates it after a push', async () => {
