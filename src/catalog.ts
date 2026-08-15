@@ -60,6 +60,40 @@ const entrySchema = z.object({
     'lifecycle-script',
     'build-script',
   ])),
+  installScripts: z.record(z.string(), z.string()).nullable().optional(),
+}).strict()
+
+const packEntrySchema = z.object({
+  repositoryId: z.string().regex(/^\d+$/),
+  repository: z.object({
+    fullName: z.string().min(3),
+    url: z.url(),
+    defaultBranch: z.string().min(1),
+    commitSha: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+    archived: z.boolean(),
+  }).strict(),
+  name: z.string().min(1),
+  description: nullableText,
+  items: z.array(z.object({
+    fullName: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+    repositoryId: z.string().regex(/^\d+$/).nullable(),
+  }).strict()),
+  stars: z.number().int().nonnegative(),
+  repositoryCreatedAt: isoDate,
+  lastCodePushAt: isoDate,
+  firstSeenAt: isoDate,
+  indexedAt: isoDate,
+  validation: z.object({
+    status: z.enum(['valid', 'invalid', 'archived']),
+    code: z.enum([
+      'valid-pack',
+      'repository-archived',
+      'pack-manifest-missing',
+      'pack-manifest-invalid',
+      'github-request-failed',
+    ]),
+    message: nullableText,
+  }).strict(),
 }).strict()
 
 const catalogSchema = z.object({
@@ -74,8 +108,10 @@ const catalogSchema = z.object({
   summary: z.object({
     entryCount: z.number().int().nonnegative(),
     invalidEntryCount: z.number().int().nonnegative(),
+    packCount: z.number().int().nonnegative().optional(),
   }).strict(),
   entries: z.array(entrySchema),
+  packs: z.array(packEntrySchema).optional(),
 }).strict()
 
 /** Stable catalog validation error suitable for mapping to a public error code. */
@@ -128,6 +164,9 @@ export function sealMarketplaceCatalog(catalog: MarketplaceCatalogSnapshot): Mar
 
 /**
  * Parse, strictly validate, and verify a complete catalog publication.
+ * The integrity digest is verified over the exact wire payload; newer optional
+ * fields (packs, installScripts) are normalized onto the result afterwards so
+ * older cached catalogs keep parsing and verifying.
  * @param text - UTF-8 JSON text downloaded from the publication or cache.
  * @returns Strictly validated catalog with a verified logical digest.
  */
@@ -140,19 +179,30 @@ export function parseMarketplaceCatalogText(text: string): MarketplaceCatalogSna
   }
   const parsed = catalogSchema.safeParse(value)
   if (!parsed.success) throw new MarketplaceCatalogParseError('Catalog does not match schema version 1')
-  const catalog = parsed.data as MarketplaceCatalogSnapshot
-  if (catalog.summary.entryCount !== catalog.entries.length) {
+  const wire = parsed.data
+  if (wire.summary.entryCount !== wire.entries.length) {
     throw new MarketplaceCatalogParseError('Catalog entry count does not match its summary')
   }
-  const invalidCount = catalog.entries.filter(entry => entry.validation.status !== 'valid').length
-  if (catalog.summary.invalidEntryCount !== invalidCount) {
+  const invalidCount = wire.entries.filter(entry => entry.validation.status !== 'valid').length
+  if (wire.summary.invalidEntryCount !== invalidCount) {
     throw new MarketplaceCatalogParseError('Catalog invalid-entry count does not match its summary')
   }
-  if (new Set(catalog.entries.map(entry => entry.repositoryId)).size !== catalog.entries.length) {
+  const wirePacks = wire.packs ?? []
+  if (wire.summary.packCount !== undefined && wire.summary.packCount !== wirePacks.length) {
+    throw new MarketplaceCatalogParseError('Catalog pack count does not match its summary')
+  }
+  const ids = [...wire.entries.map(entry => entry.repositoryId), ...wirePacks.map(pack => pack.repositoryId)]
+  if (new Set(ids).size !== ids.length) {
     throw new MarketplaceCatalogParseError('Catalog contains duplicate repository ids')
   }
-  if (computeMarketplaceCatalogDigest(catalog) !== catalog.integrity.digest) {
+  const wireDigest = computeMarketplaceCatalogDigest(wire as MarketplaceCatalogSnapshot)
+  if (wireDigest !== wire.integrity.digest) {
     throw new MarketplaceCatalogParseError('Catalog integrity digest does not match')
   }
-  return catalog
+  return {
+    ...wire,
+    summary: { ...wire.summary, packCount: wirePacks.length },
+    entries: wire.entries.map(entry => ({ ...entry, installScripts: entry.installScripts ?? null })),
+    packs: wirePacks,
+  } as MarketplaceCatalogSnapshot
 }

@@ -8,7 +8,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { MarketplaceCatalogClient } from './catalog-client.ts'
-import { detailMarketplaceEntry, installedMarketplacePlugins, queryMarketplaceCatalog } from './catalog-query.ts'
+import { detailMarketplaceEntry, detailMarketplacePack, installedMarketplacePlugins, listMarketplacePacks, queryMarketplaceCatalog } from './catalog-query.ts'
 import {
   detectMarketplaceOperationCapabilities,
   MarketplaceProfileOperations,
@@ -117,10 +117,14 @@ function planRequest(value: unknown): MarketplacePlanRequest {
 }
 
 function executeRequest(value: unknown): MarketplaceExecuteRequest {
-  if (!isRecord(value) || typeof value.planId !== 'string' || value.planId.length === 0) {
+  if (!isRecord(value) || typeof value.planId !== 'string' || value.planId.length === 0
+    || (value.allowScripts !== undefined && typeof value.allowScripts !== 'boolean')) {
     throw new ApiFailure(400, 'request-invalid', 'Invalid marketplace execute request.')
   }
-  return { planId: value.planId as MarketplaceExecuteRequest['planId'] }
+  return {
+    planId: value.planId as MarketplaceExecuteRequest['planId'],
+    ...(typeof value.allowScripts === 'boolean' ? { allowScripts: value.allowScripts } : {}),
+  }
 }
 
 const INSTALLABILITY_FILTERS = new Set(['all', 'one-click-eligible', 'manual'])
@@ -232,6 +236,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           }
           case 'operationSnapshot': value = operations.snapshot(); break
           case 'installed': value = installedMarketplacePlugins(catalog.view(), operations.snapshot()); break
+          case 'packs': value = listMarketplacePacks(catalog.view()); break
+          case 'packDetail': {
+            value = detailMarketplacePack(catalog.view(), operations.snapshot(), detailRequest(body.params))
+            break
+          }
           case 'plan': value = operations.plan(planRequest(body.params)); break
           case 'execute': value = await operations.execute(executeRequest(body.params)); break
           default: throw new ApiFailure(404, 'method-unknown', 'Unknown marketplace API method.')

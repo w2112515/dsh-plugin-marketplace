@@ -12,7 +12,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
 
 import { PluginMarketplaceSettingsTab, type PluginMarketplaceSettingsTabProps } from '../src/client/PluginMarketplaceSettingsTab.tsx'
 import type { MarketplaceListModel, MarketplaceOperationSnapshot, MarketplacePluginDetailModel } from '../src/client/marketplace-adapter.ts'
-import type { MarketplaceInstalledResponse } from '../src/types.ts'
+import type { MarketplaceInstalledResponse, MarketplacePackDetailResponse, MarketplacePackSummary } from '../src/types.ts'
 import { en } from '../src/client/locales.ts'
 
 afterEach(cleanup)
@@ -52,6 +52,7 @@ const detail: MarketplacePluginDetailModel = {
   stars: 42, repositoryCreatedAt: '2026-01-01T00:00:00.000Z', lastCodePushAt: '2026-08-13T00:00:00.000Z', firstSeenAt: '2026-08-14T00:00:00.000Z',
   category: 'tool',
   validationStatus: 'valid', validationMessage: null, compatibility: 'compatible', installability: 'one-click-eligible', riskSignals: [], sourceRef: 'git+https://example.test/weather.git#abc',
+  installScripts: null,
 }
 
 const rowItem = {
@@ -83,6 +84,26 @@ function installedModel(items: MarketplaceInstalledResponse['items'] = [], exter
   return { profileName: 'web', busy: false, capabilities, items, external }
 }
 
+const packSummary: MarketplacePackSummary = {
+  repositoryId: 'pack-1', name: 'Starter Pack', publisher: 'example',
+  repositoryFullName: 'example/starter-pack', repositoryUrl: 'https://github.com/example/starter-pack',
+  description: 'A curated starter set.', stars: 7, itemCount: 4, lastCodePushAt: '2026-08-13T00:00:00.000Z',
+}
+
+const packDetailModel: MarketplacePackDetailResponse = {
+  pack: packSummary,
+  items: [
+    { fullName: 'example/weather-bundle', repositoryId: 'plugin-1', status: 'installable', name: 'Weather Bundle', packageName: '@example/weather-bundle', repositoryUrl: 'https://github.com/example/weather-bundle', state: null },
+    { fullName: 'example/second-plugin', repositoryId: 'plugin-2', status: 'installable', name: 'Second Plugin', packageName: '@example/second-plugin', repositoryUrl: 'https://github.com/example/second-plugin', state: null },
+    { fullName: 'example/scripted-plugin', repositoryId: 'plugin-3', status: 'script-gated', name: 'Scripted Plugin', packageName: '@example/scripted-plugin', repositoryUrl: 'https://github.com/example/scripted-plugin', state: null },
+    { fullName: 'example/unknown-plugin', repositoryId: null, status: 'unavailable', name: null, packageName: null, repositoryUrl: null, state: null },
+  ],
+}
+
+function packsModel(packs: readonly MarketplacePackSummary[] = []) {
+  return { digest: 'digest-packs', catalogStatus: 'ready' as const, source: 'cache' as const, stale: false, packs, error: null }
+}
+
 function renderTab(overrides: Partial<PluginMarketplaceSettingsTabProps> = {}) {
   const list = vi.fn(async (request: { page: number }) => listModel(request.page))
   const props = {
@@ -92,7 +113,9 @@ function renderTab(overrides: Partial<PluginMarketplaceSettingsTabProps> = {}) {
     refresh: vi.fn(async () => ({ changed: false, list: null, source: 'cache' as const, stale: false, lastSuccessfulFetchAt: '2026-08-14T00:00:00.000Z', error: null })),
     operationSnapshot: vi.fn(async () => operationSnapshot),
     installed: vi.fn(async () => installedModel()),
-    plan: vi.fn(async () => ({ status: 'ready' as const, planId: 'plan-1' as never, blockCode: null, action: 'install' as const, profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0', sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['restart-required'] as const, expiresAt: null })),
+    packs: vi.fn(async () => packsModel()),
+    packDetail: vi.fn(async () => ({ pack: null, items: [] })),
+    plan: vi.fn(async () => ({ status: 'ready' as const, planId: 'plan-1' as never, blockCode: null, action: 'install' as const, profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0', sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['restart-required'] as const, requiresScripts: false, installScripts: null, expiresAt: null })),
     execute: vi.fn(async () => ({ status: 'succeeded' as const, code: 'succeeded' as const, action: 'install' as const, profileName: 'web', packageName: '@example/weather-bundle', requiresRestart: true, rollback: 'not-needed' as const, snapshot: operationSnapshot })),
     activateTab: vi.fn(),
     t: translate as PluginMarketplaceSettingsTabProps['t'],
@@ -117,7 +140,7 @@ describe('PluginMarketplaceSettingsTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and update profile' }))
     await screen.findByText('Install was written to the profile; restart to apply it.')
-    expect(props.execute).toHaveBeenCalledWith('plan-1')
+    expect(props.execute).toHaveBeenCalledWith('plan-1', false)
 
     const back = screen.getByRole('button', { name: 'Back to list' })
     fireEvent.click(back)
@@ -156,7 +179,7 @@ describe('PluginMarketplaceSettingsTab', () => {
         [{ state: activeState, plugin: summaryPlugin }],
         [{ packageName: '@elsewhere/tool', installedSpec: '1.2.3', activeAtLaunch: true, activeAfterRestart: true }],
       )),
-      plan: vi.fn(async () => ({ status: 'ready' as const, planId: 'plan-9' as never, blockCode: null, action: 'remove' as const, profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0', sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['restart-required'] as const, expiresAt: null })),
+      plan: vi.fn(async () => ({ status: 'ready' as const, planId: 'plan-9' as never, blockCode: null, action: 'remove' as const, profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0', sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['restart-required'] as const, requiresScripts: false, installScripts: null, expiresAt: null })),
     })
 
     await screen.findByText('Weather Bundle')
@@ -241,5 +264,91 @@ describe('PluginMarketplaceSettingsTab', () => {
     await screen.findByRole('button', { name: 'Retry' })
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(2))
+  })
+
+  it('gates a script-running install behind verbatim review and explicit consent', async () => {
+    const scriptedDetail: MarketplacePluginDetailModel = {
+      ...detail, installability: 'manual', installScripts: { prepare: 'node build.js' },
+    }
+    const manualList = { ...listModel(), items: [{ ...rowItem, installability: 'manual' as const }] }
+    const props = renderTab({
+      bootstrap: vi.fn(async () => ({ list: manualList, operations: operationSnapshot })),
+      list: vi.fn(async () => manualList),
+      detail: vi.fn(async () => scriptedDetail),
+      plan: vi.fn(async () => ({
+        status: 'ready' as const, planId: 'plan-7' as never, blockCode: null, action: 'install' as const,
+        profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0',
+        sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['install-scripts-run', 'restart-required'] as const,
+        requiresScripts: true, installScripts: { prepare: 'node build.js' } as const, expiresAt: null,
+      })),
+    })
+
+    await screen.findByText('Weather Bundle')
+    fireEvent.click(screen.getByRole('button', { name: 'View manual instructions' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Install with scripts' }))
+
+    // The reviewed plan discloses every script body verbatim and stays
+    // unconfirmable until the user checks the consent box.
+    await screen.findByText('This plugin declares the following install scripts')
+    expect(screen.getByText('node build.js')).toBeTruthy()
+    const confirm = screen.getByRole('button', { name: 'Confirm and update profile' }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(confirm.disabled).toBe(false)
+    fireEvent.click(confirm)
+    await screen.findByText('Install was written to the profile; restart to apply it.')
+    expect(props.execute).toHaveBeenCalledWith('plan-7', true)
+  })
+
+  it('installs a pack serially through per-item plans and reports each outcome', async () => {
+    const props = renderTab({
+      packs: vi.fn(async () => packsModel([packSummary])),
+      packDetail: vi.fn(async () => packDetailModel),
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Starter Pack/ }))
+    expect(props.packDetail).toHaveBeenCalledWith('pack-1')
+
+    // Every item states its fate explicitly; packs never smuggle privilege.
+    await screen.findByText('Second Plugin')
+    expect(screen.getAllByText('Will auto-install')).toHaveLength(2)
+    expect(screen.getByText('Needs script review')).toBeTruthy()
+    expect(screen.getByText('Not in catalog')).toBeTruthy()
+    expect(screen.getByText(/never consent on your behalf/)).toBeTruthy()
+    expect(screen.getByText('2 of 4 items can be installed automatically')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install 2 plugins' }))
+    await screen.findByText('Install results')
+    expect(props.plan).toHaveBeenCalledWith({ repositoryId: 'plugin-1', action: 'install' })
+    expect(props.plan).toHaveBeenCalledWith({ repositoryId: 'plugin-2', action: 'install' })
+    expect(props.plan).toHaveBeenCalledTimes(2)
+    expect(props.execute).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('Weather Bundle: written to the profile')).toBeTruthy()
+    expect(screen.getByText('Second Plugin: written to the profile')).toBeTruthy()
+
+    // A script-gated item routes to its own detail page for individual consent.
+    fireEvent.click(screen.getByRole('button', { name: 'Review scripts and install' }))
+    await screen.findByText('About')
+  })
+
+  it('stops a pack install at the first failure and reports the skipped remainder', async () => {
+    const failedExecute = vi.fn(async () => ({
+      status: 'failed' as const, code: 'pnpm-failed' as const, action: 'install' as const,
+      profileName: 'web', packageName: '@example/weather-bundle', requiresRestart: false,
+      rollback: 'succeeded' as const, snapshot: operationSnapshot,
+    }))
+    const props = renderTab({
+      packs: vi.fn(async () => packsModel([packSummary])),
+      packDetail: vi.fn(async () => packDetailModel),
+      execute: failedExecute,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Starter Pack/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Install 2 plugins' }))
+    await screen.findByText('Install results')
+    expect(props.plan).toHaveBeenCalledTimes(1)
+    expect(failedExecute).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Weather Bundle: failed (pnpm-failed); remaining items stopped')).toBeTruthy()
+    expect(screen.getByText('1 items not attempted after an earlier failure')).toBeTruthy()
   })
 })

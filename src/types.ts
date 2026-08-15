@@ -13,10 +13,18 @@ export type MarketplaceValidationCode =
   | 'patch-invalid'
   | 'github-request-failed'
 
+/** Stable validation outcome code for solution-pack repositories. */
+export type MarketplacePackValidationCode =
+  | 'valid-pack'
+  | 'repository-archived'
+  | 'pack-manifest-missing'
+  | 'pack-manifest-invalid'
+  | 'github-request-failed'
+
 /** Compatibility is never inferred from popularity or repository metadata. */
 export type MarketplaceCompatibility = 'compatible' | 'incompatible' | 'unknown'
 
-/** Installation eligibility remains conservative until the M2 artifact contract exists. */
+/** Installation eligibility: one-click is earned by verified shipped files at the pin. */
 export type MarketplaceInstallability = 'browse-only' | 'manual' | 'one-click-eligible'
 
 /** Statically observable repository risks. */
@@ -72,12 +80,53 @@ export interface MarketplaceCatalogEntry {
   readonly compatibility: MarketplaceCompatibility
   readonly installability: MarketplaceInstallability
   readonly riskSignals: readonly MarketplaceRiskSignal[]
+  /**
+   * Lifecycle script bodies (preinstall/install/postinstall/prepare) declared by
+   * the package, verbatim. Null when none exist. Their presence on a 'manual'
+   * entry marks the consent-gated installation path: the Host may run them only
+   * after the user reviews and approves these exact strings.
+   */
+  readonly installScripts: Readonly<Record<string, string>> | null
+}
+
+/** One plugin reference inside a solution pack, keyed by stable repository id. */
+export interface MarketplacePackItem {
+  /** owner/repo exactly as the pack author declared it. */
+  readonly fullName: string
+  /** Stable repository id when the item resolved to a scanned plugin repository. */
+  readonly repositoryId: string | null
+}
+
+/** One discovered solution-pack repository (double-tagged dsh-plugin + dsh-plugin-pack). */
+export interface MarketplacePackEntry {
+  readonly repositoryId: string
+  readonly repository: {
+    readonly fullName: string
+    readonly url: string
+    readonly defaultBranch: string
+    readonly commitSha: string | null
+    readonly archived: boolean
+  }
+  readonly name: string
+  readonly description: string | null
+  readonly items: readonly MarketplacePackItem[]
+  readonly stars: number
+  readonly repositoryCreatedAt: string
+  readonly lastCodePushAt: string
+  readonly firstSeenAt: string
+  readonly indexedAt: string
+  readonly validation: {
+    readonly status: MarketplaceValidationStatus
+    readonly code: MarketplacePackValidationCode
+    readonly message: string | null
+  }
 }
 
 /** Summary kept next to the entries so partial scanner output cannot look complete. */
 export interface MarketplaceCatalogSummary {
   readonly entryCount: number
   readonly invalidEntryCount: number
+  readonly packCount: number
 }
 
 /** Version-one immutable marketplace publication. */
@@ -89,6 +138,7 @@ export interface MarketplaceCatalogSnapshot {
   readonly integrity: MarketplaceCatalogIntegrity
   readonly summary: MarketplaceCatalogSummary
   readonly entries: readonly MarketplaceCatalogEntry[]
+  readonly packs: readonly MarketplacePackEntry[]
 }
 
 /** Host-side retrieval/cache failure codes safe to show to a Client. */
@@ -218,6 +268,59 @@ export interface MarketplacePluginDetailResponse {
   readonly state: MarketplaceProfilePluginState | null
 }
 
+/** Compact pack row for the discover view. */
+export interface MarketplacePackSummary {
+  readonly repositoryId: string
+  readonly name: string
+  readonly publisher: string
+  readonly repositoryFullName: string
+  readonly repositoryUrl: string
+  readonly description: string | null
+  readonly stars: number
+  readonly itemCount: number
+  readonly lastCodePushAt: string
+}
+
+/** All admitted packs plus the freshness facts that qualify them. */
+export interface MarketplacePackListResponse {
+  readonly digest: string
+  readonly catalogStatus: MarketplaceCatalogView['status']
+  readonly source: MarketplaceCatalogView['source']
+  readonly stale: boolean
+  readonly packs: readonly MarketplacePackSummary[]
+  readonly error: MarketplaceCatalogError | null
+}
+
+/** How one pack item relates to the catalog and the current profile. */
+export type MarketplacePackItemStatus =
+  /** Admitted and one-click-eligible; the pack installer may queue it. */
+  | 'installable'
+  /** Admitted but needs install scripts; consent stays per-plugin, never bulk. */
+  | 'script-gated'
+  /** Admitted but cannot be installed automatically at all; repository link only. */
+  | 'manual'
+  /** Not resolved to an admitted catalog entry; the pack cannot deliver it. */
+  | 'unavailable'
+  /** Already present in the current profile (any installed or pending state). */
+  | 'installed'
+
+/** One pack item joined with catalog and profile truth. */
+export interface MarketplacePackItemView {
+  readonly fullName: string
+  readonly repositoryId: string | null
+  readonly status: MarketplacePackItemStatus
+  readonly name: string | null
+  readonly packageName: string | null
+  readonly repositoryUrl: string | null
+  readonly state: MarketplaceProfilePluginState['state'] | null
+}
+
+/** Pack detail with every item's status resolved for the confirm view. */
+export interface MarketplacePackDetailResponse {
+  readonly pack: MarketplacePackSummary | null
+  readonly items: readonly MarketplacePackItemView[]
+}
+
 /** Opaque, short-lived identifier for one reviewed profile operation. */
 export type MarketplacePlanId = string & { readonly __marketplacePlanId: unique symbol }
 
@@ -309,6 +412,7 @@ export type MarketplacePlanWarning =
   | 'git-source'
   | 'code-executes-on-restart'
   | 'install-scripts-disabled'
+  | 'install-scripts-run'
   | 'restart-required'
   | 'origin-differs'
 
@@ -324,6 +428,10 @@ export interface MarketplaceOperationPlan {
   readonly packageVersion: string | null
   readonly sourceRef: string | null
   readonly commitSha: string | null
+  /** True when installation must run the declared lifecycle scripts to succeed. */
+  readonly requiresScripts: boolean
+  /** The exact script bodies the user must approve when requiresScripts is true. */
+  readonly installScripts: Readonly<Record<string, string>> | null
   readonly warnings: readonly MarketplacePlanWarning[]
   readonly expiresAt: string | null
 }
@@ -331,6 +439,8 @@ export interface MarketplaceOperationPlan {
 /** Execute one previously reviewed operation exactly once. */
 export interface MarketplaceExecuteRequest {
   readonly planId: MarketplacePlanId
+  /** Required to be exactly true when the reviewed plan carries requiresScripts. */
+  readonly allowScripts?: boolean
 }
 
 /** Stable result code for a committed, rejected, or recovered profile operation. */
@@ -339,7 +449,9 @@ export type MarketplaceOperationCode =
   | 'operation-busy'
   | 'plan-expired'
   | 'plan-invalid'
+  | 'consent-required'
   | 'profile-state-changed'
+  | 'profile-write-failed'
   | 'pnpm-unavailable'
   | 'pnpm-failed'
   | 'installed-package-invalid'

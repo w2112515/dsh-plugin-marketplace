@@ -9,11 +9,13 @@ import type {
   MarketplaceOperationPlan,
   MarketplaceOperationResult,
   MarketplaceOperationSnapshot,
+  MarketplacePackItemView,
+  MarketplacePackSummary,
   MarketplacePlanRequest,
   MarketplacePluginDetailModel,
   MarketplacePluginRowModel,
 } from './marketplace-adapter.ts'
-import type { MarketplaceExternalPlugin, MarketplaceInstalledResponse } from '../types.ts'
+import type { MarketplaceExternalPlugin, MarketplaceInstalledResponse, MarketplacePackDetailResponse, MarketplacePackListResponse } from '../types.ts'
 import type { PluginMarketplaceLocaleKey } from './locales.ts'
 import css from './PluginMarketplaceSettingsTab.module.css'
 
@@ -24,8 +26,10 @@ export interface PluginMarketplaceSettingsTabInjected {
   refresh: (request: MarketplaceListRequest, currentDigest: string) => Promise<{ readonly changed: boolean; readonly list: MarketplaceListModel | null; readonly source: MarketplaceListModel['source']; readonly stale: MarketplaceListModel['stale']; readonly lastSuccessfulFetchAt: string | null; readonly error: MarketplaceListModel['error'] }>
   operationSnapshot: () => Promise<MarketplaceOperationSnapshot>
   installed: () => Promise<MarketplaceInstalledResponse>
+  packs: () => Promise<MarketplacePackListResponse>
+  packDetail: (repositoryId: string) => Promise<MarketplacePackDetailResponse>
   plan: (request: MarketplacePlanRequest) => Promise<MarketplaceOperationPlan>
-  execute: (planId: NonNullable<MarketplaceOperationPlan['planId']>) => Promise<MarketplaceOperationResult>
+  execute: (planId: NonNullable<MarketplaceOperationPlan['planId']>, allowScripts?: boolean) => Promise<MarketplaceOperationResult>
   activateTab: (id: string) => void
 }
 
@@ -37,6 +41,7 @@ type InstallFilter = 'all' | 'one-click' | 'manual'
 type SortKey = 'recommended' | 'stars' | 'updated' | 'added'
 type InstalledSort = 'updates' | 'name' | 'updated'
 type DetailState = { readonly status: 'idle' | 'loading' } | { readonly status: 'ready'; readonly plugin: MarketplacePluginDetailModel } | { readonly status: 'missing' | 'error'; readonly message?: string }
+type PackDetailState = { readonly status: 'idle' | 'loading' } | { readonly status: 'ready'; readonly detail: MarketplacePackDetailResponse } | { readonly status: 'missing' | 'error' }
 type ProfilePluginState = MarketplaceOperationSnapshot['plugins'][number]
 
 function formatTime(iso: string): string {
@@ -69,7 +74,7 @@ const STATE_KEYS = {
 
 const WARNING_KEYS = {
   'compatibility-unknown': 'operation.warning.compatibility', 'git-source': 'operation.warning.git', 'code-executes-on-restart': 'operation.warning.code',
-  'install-scripts-disabled': 'operation.warning.scripts', 'restart-required': 'operation.warning.restart', 'origin-differs': 'operation.warning.origin',
+  'install-scripts-disabled': 'operation.warning.scripts', 'install-scripts-run': 'operation.warning.scriptsRun', 'restart-required': 'operation.warning.restart', 'origin-differs': 'operation.warning.origin',
 } satisfies Record<MarketplaceOperationPlan['warnings'][number], PluginMarketplaceLocaleKey>
 
 const RISK_KEYS = {
@@ -167,11 +172,13 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
   const [result, setResult] = useState<MarketplaceOperationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false)
+  const [consent, setConsent] = useState(false)
   const restartPending = isRestartPending(pluginState?.state)
   const installed = pluginState?.installedSpec !== null && pluginState?.installedSpec !== undefined
   const canInstall = canChangeProfile(profile)
+  const scriptGated = plugin.installability === 'manual' && plugin.installScripts !== null
   const requestPlan = (action: MarketplacePlanRequest['action']): void => {
-    setWorking(true); setError(null); setResult(null)
+    setWorking(true); setError(null); setResult(null); setConsent(false)
     void planOperation({ repositoryId: plugin.id, action }).then(setReview).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : String(cause))
     }).finally(() => { setWorking(false) })
@@ -186,8 +193,9 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
   }, [initialAction])
   const confirm = (): void => {
     if (review?.planId === null || review?.planId === undefined) return
+    if (review.requiresScripts && !consent) return
     setWorking(true); setError(null)
-    void executeOperation(review.planId).then((next) => {
+    void executeOperation(review.planId, review.requiresScripts).then((next) => {
       setResult(next); onSnapshot(next.snapshot)
       if (next.status === 'succeeded') setReview(null)
     }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) }).finally(() => { setWorking(false) })
@@ -199,16 +207,18 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
     {result ? <p className={result.status === 'succeeded' ? css.operationSuccess : css.operationFailure} role="status">{result.status === 'succeeded' ? t('operation.succeeded', { action: t(ACTION_KEYS[result.action ?? 'install']) }) : t('operation.failed', { code: result.code, rollback: result.rollback })}</p> : null}
     {error ? <p className={css.operationFailure} role="alert">{t('operation.transportError', { error })}</p> : null}
     {review?.status === 'blocked' ? <div className={css.reviewBox} role="status"><strong>{t('operation.blocked')}</strong><p>{t('operation.blockedReason', { code: review.blockCode ?? 'unknown' })}</p><button type="button" className={css.secondaryButton} onClick={() => { setReview(null) }}>{t('operation.dismiss')}</button></div> : null}
-    {review?.status === 'ready' ? <div className={css.reviewBox}><strong>{t('operation.reviewTitle')}</strong><dl className={css.reviewFacts}><div><dt>{t('operation.reviewAction')}</dt><dd>{t(ACTION_KEYS[review.action ?? 'install'])}</dd></div><div><dt>{t('operation.reviewProfile')}</dt><dd>{review.profileName}</dd></div><div><dt>{t('operation.reviewPackage')}</dt><dd>{review.packageName} · {review.packageVersion}</dd></div><div><dt>{t('operation.reviewCommit')}</dt><dd><code>{review.commitSha}</code></dd></div></dl>{review.warnings.length > 0 ? <ul className={css.warningList}>{review.warnings.map(warning => <li key={warning}>{t(WARNING_KEYS[warning])}</li>)}</ul> : null}<div className={css.actionRow}><button type="button" className={css.primaryButton} disabled={working} onClick={confirm}>{working ? t('operation.working') : t('operation.confirm')}</button><button type="button" className={css.secondaryButton} disabled={working} onClick={() => { setReview(null) }}>{t('operation.cancel')}</button></div></div> : null}
+    {review?.status === 'ready' ? <div className={css.reviewBox}><strong>{t('operation.reviewTitle')}</strong><dl className={css.reviewFacts}><div><dt>{t('operation.reviewAction')}</dt><dd>{t(ACTION_KEYS[review.action ?? 'install'])}</dd></div><div><dt>{t('operation.reviewProfile')}</dt><dd>{review.profileName}</dd></div><div><dt>{t('operation.reviewPackage')}</dt><dd>{review.packageName} · {review.packageVersion}</dd></div><div><dt>{t('operation.reviewCommit')}</dt><dd><code>{review.commitSha}</code></dd></div></dl>{review.requiresScripts && review.installScripts !== null ? <div className={css.scriptReview}><strong>{t('scripts.title')}</strong><ul className={css.scriptList}>{Object.entries(review.installScripts).map(([name, body]) => <li key={name}><code>{name}</code><pre>{body}</pre></li>)}</ul><label className={css.consentRow}><input type="checkbox" checked={consent} onChange={(event) => { setConsent(event.currentTarget.checked) }} /><span>{t('scripts.consent')}</span></label></div> : null}{review.warnings.length > 0 ? <ul className={css.warningList}>{review.warnings.map(warning => <li key={warning}>{t(WARNING_KEYS[warning])}</li>)}</ul> : null}<div className={css.actionRow}><button type="button" className={css.primaryButton} disabled={working || (review.requiresScripts && !consent)} onClick={confirm}>{working ? t('operation.working') : t('operation.confirm')}</button><button type="button" className={css.secondaryButton} disabled={working} onClick={() => { setReview(null) }}>{t('operation.cancel')}</button></div></div> : null}
     {review === null ? <div className={css.actionRow}>
       {!installed && plugin.installability === 'one-click-eligible' ? <button type="button" className={css.primaryButton} disabled={working || restartPending || !canInstall} onClick={() => { requestPlan('install') }}>{t('install.action')}</button> : null}
-      {!installed && plugin.installability !== 'one-click-eligible' ? <a className={css.secondaryButton} href={plugin.repositoryUrl} target="_blank" rel="noreferrer noopener">{t('row.manualAction')}<IconRightUpOutline14 aria-hidden="true" /></a> : null}
+      {!installed && scriptGated ? <button type="button" className={css.primaryButton} disabled={working || restartPending || !canInstall} onClick={() => { requestPlan('install') }}>{t('install.actionScripted')}</button> : null}
+      {!installed && plugin.installability !== 'one-click-eligible' && !scriptGated ? <a className={css.secondaryButton} href={plugin.repositoryUrl} target="_blank" rel="noreferrer noopener">{t('row.manualAction')}<IconRightUpOutline14 aria-hidden="true" /></a> : null}
       {installed && pluginState?.updateAvailable && !restartPending ? <button type="button" className={css.primaryButton} disabled={working || !canInstall} onClick={() => { requestPlan('install') }}>{t('operation.update')}</button> : null}
       {pluginState?.state === 'active' ? <button type="button" className={css.secondaryButton} onClick={() => { activateTab('configurable') }}>{t('operation.configure')}</button> : null}
       {installed && !restartPending ? <button type="button" className={css.dangerButton} disabled={working || !canInstall} onClick={() => { requestPlan('remove') }}>{t('operation.remove')}</button> : null}
     </div> : null}
     {pluginState?.state === 'active' ? <p className={css.installReason}>{t('operation.configureHint')}</p> : null}
-    {!installed && plugin.installability !== 'one-click-eligible' ? <p className={css.installReason}>{t('install.unavailable')}</p> : null}
+    {!installed && scriptGated ? <p className={css.installReason}>{t('install.scriptedHint')}</p> : null}
+    {!installed && plugin.installability !== 'one-click-eligible' && !scriptGated ? <p className={css.installReason}>{t('install.unavailable')}</p> : null}
   </aside>
 }
 
@@ -348,7 +358,144 @@ function ExternalRow({ item, t }: { item: MarketplaceExternalPlugin; t: Translat
   </li>
 }
 
-export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh, operationSnapshot, installed, plan, execute, activateTab, t }: PluginMarketplaceSettingsTabProps): ReactNode {
+const PACK_STATUS_KEYS = {
+  installable: 'pack.item.installable', 'script-gated': 'pack.item.scriptGated', manual: 'pack.item.manual',
+  unavailable: 'pack.item.unavailable', installed: 'pack.item.installed',
+} satisfies Record<MarketplacePackItemView['status'], PluginMarketplaceLocaleKey>
+
+function PackStrip({ packs, t, onOpen }: { packs: readonly MarketplacePackSummary[]; t: Translate; onOpen: (id: string) => void }): ReactNode {
+  if (packs.length === 0) return null
+  return <section className={css.packSection} aria-label={t('pack.section')}>
+    <h4 className={css.externalHeading}>{t('pack.section')}</h4>
+    <div className={css.packGrid}>{packs.map(pack => <button key={pack.repositoryId} type="button" className={css.packCard} onClick={() => { onOpen(pack.repositoryId) }}>
+      <span className={css.rowHeading}><strong className={css.rowTitle} title={pack.name}>{pack.name}</strong><span className={css.relationChip}>{t('pack.itemCount', { count: pack.itemCount })}</span></span>
+      <span className={css.rowPeople}>{t('row.publisher', { publisher: pack.publisher })} · {t('card.stars', { count: pack.stars })}</span>
+      {pack.description ? <span className={css.rowDescription}>{pack.description}</span> : null}
+    </button>)}</div>
+  </section>
+}
+
+function PackItemRow({ item, t, onOpenPlugin }: { item: MarketplacePackItemView; t: Translate; onOpenPlugin: (id: string) => void }): ReactNode {
+  const owner = item.fullName.split('/')[0] ?? item.fullName
+  const name = item.name ?? item.fullName
+  return <li className={css.row}>
+    <div className={css.rowStatic}><span className={css.rowMain}>
+      <PluginAvatar publisher={owner} name={name} />
+      <span className={css.rowPrimary}>
+        <span className={css.rowHeading}>
+          <strong className={css.rowTitle} title={name}>{name}</strong>
+          <span className={item.status === 'installable' ? css.updateBadge : css.relationChip}>{t(PACK_STATUS_KEYS[item.status])}</span>
+          {item.status === 'installed' && item.state !== null ? <span className={css.stateBadge}>{t(STATE_KEYS[item.state])}</span> : null}
+        </span>
+        <span className={css.rowMeta}><code className={css.rowPackage}>{item.fullName}</code></span>
+      </span>
+    </span></div>
+    <div className={css.rowAction}>
+      {item.status === 'script-gated' && item.repositoryId !== null
+        ? <button type="button" className={css.secondaryButton} onClick={() => { onOpenPlugin(item.repositoryId as string) }}>{t('pack.reviewScripts')}</button>
+        : null}
+      {item.repositoryUrl !== null && (item.status === 'manual' || item.status === 'unavailable')
+        ? <a className={css.secondaryButton} href={item.repositoryUrl} target="_blank" rel="noreferrer noopener">{t('row.manualAction')}<IconRightUpOutline14 aria-hidden="true" /></a>
+        : null}
+    </div>
+  </li>
+}
+
+interface PackInstallOutcome {
+  readonly name: string
+  readonly ok: boolean
+  readonly code: string
+}
+
+function PackDetailView({ detail, profile, t, onBack, planOperation, executeOperation, onSnapshot, onOpenPlugin, onChanged }: {
+  detail: MarketplacePackDetailResponse
+  profile: MarketplaceOperationSnapshot | null
+  t: Translate
+  onBack: () => void
+  planOperation: PluginMarketplaceSettingsTabInjected['plan']
+  executeOperation: PluginMarketplaceSettingsTabInjected['execute']
+  onSnapshot: (snapshot: MarketplaceOperationSnapshot) => void
+  onOpenPlugin: (id: string) => void
+  onChanged: () => void
+}): ReactNode {
+  const [working, setWorking] = useState(false)
+  const [progress, setProgress] = useState<{ readonly index: number; readonly total: number; readonly name: string } | null>(null)
+  const [outcomes, setOutcomes] = useState<readonly PackInstallOutcome[] | null>(null)
+  const pack = detail.pack
+  const items = detail.items
+  const installable = items.filter(item => item.status === 'installable' && item.repositoryId !== null)
+  const canInstall = canChangeProfile(profile) && !profile?.busy
+  const anyRestartPending = (profile?.plugins ?? []).some(state => isRestartPending(state.state))
+  if (pack === null) return null
+  // Serial reuse of the reviewed single-plugin path: each item gets its own
+  // plan + execute, the first failure stops the run, and nothing is rolled
+  // back — every outcome is reported per item, never summarized away.
+  const runInstall = (): void => {
+    setWorking(true); setOutcomes(null)
+    void (async () => {
+      const collected: PackInstallOutcome[] = []
+      for (const [index, item] of installable.entries()) {
+        const name = item.name ?? item.fullName
+        setProgress({ index: index + 1, total: installable.length, name })
+        try {
+          const plan = await planOperation({ repositoryId: item.repositoryId as string, action: 'install' })
+          if (plan.status !== 'ready' || plan.planId === null) {
+            collected.push({ name, ok: false, code: plan.blockCode ?? 'blocked' })
+            break
+          }
+          const result = await executeOperation(plan.planId)
+          onSnapshot(result.snapshot)
+          collected.push({ name, ok: result.status === 'succeeded', code: result.code })
+          if (result.status !== 'succeeded') break
+        } catch (cause) {
+          collected.push({ name, ok: false, code: cause instanceof Error ? cause.message : String(cause) })
+          break
+        }
+      }
+      return collected
+    })().then((collected) => {
+      setOutcomes(collected)
+      if (collected.length > 0) onChanged()
+    }).finally(() => { setProgress(null); setWorking(false) })
+  }
+  const skipped = outcomes === null ? 0 : installable.length - outcomes.length
+  return <div className={css.detail}>
+    <button className={css.backButton} type="button" onClick={onBack}><IconChevronLeftOutline14 aria-hidden="true" />{t('detail.back')}</button>
+    <div className={css.detailContent}>
+      <header className={css.detailTitle}>
+        <div className={css.detailHeading}>
+          <PluginAvatar publisher={pack.publisher} name={pack.name} />
+          <div className={css.detailHeadingText}>
+            <h3 className={css.detailName}>{pack.name}</h3>
+            <p className={css.detailByline}>{t('row.publisher', { publisher: pack.publisher })} · {t('card.stars', { count: pack.stars })} · {t('pack.itemCount', { count: items.length })}</p>
+          </div>
+        </div>
+      </header>
+      {pack.description ? <section className={css.detailSection}><h4>{t('detail.about')}</h4><p>{pack.description}</p></section> : null}
+      <a className={css.githubLink} href={pack.repositoryUrl} target="_blank" rel="noreferrer noopener">{t('detail.viewOnGithub')}<IconRightUpOutline14 aria-hidden="true" /></a>
+    </div>
+    <aside className={css.operationPanel} aria-label={t('pack.installTitle')} aria-busy={working}>
+      <div className={css.operationHeading}><div><h4>{t('pack.installTitle')}</h4><p>{t('pack.installSummary', { installable: installable.length, total: items.length })}</p></div></div>
+      <CapabilityNotice profile={profile} t={t} />
+      {anyRestartPending ? <p className={css.restartNotice} role="status">{t('operation.restartPending')}</p> : null}
+      {progress !== null ? <p className={css.restartNotice} role="status">{t('pack.installing', { index: progress.index, total: progress.total, name: progress.name })}</p> : null}
+      {outcomes !== null ? <div className={css.reviewBox} role="status">
+        <strong>{t('pack.resultTitle')}</strong>
+        <ul className={css.warningList}>{outcomes.map(outcome => <li key={outcome.name}>{outcome.ok ? t('pack.resultOk', { name: outcome.name }) : t('pack.resultFailed', { name: outcome.name, code: outcome.code })}</li>)}{skipped > 0 ? <li>{t('pack.resultSkipped', { count: skipped })}</li> : null}</ul>
+      </div> : null}
+      {items.some(item => item.status === 'script-gated') ? <p className={css.installReason}>{t('pack.scriptGatedHint')}</p> : null}
+      {items.some(item => item.status === 'unavailable') ? <p className={css.installReason}>{t('pack.unavailableHint')}</p> : null}
+      <div className={css.actionRow}>
+        <button type="button" className={css.primaryButton} disabled={working || !canInstall || anyRestartPending || installable.length === 0} onClick={runInstall}>
+          {working ? t('operation.working') : t('pack.install', { count: installable.length })}
+        </button>
+      </div>
+    </aside>
+    <ul className={css.rows}>{items.map(item => <PackItemRow key={item.fullName} item={item} t={t} onOpenPlugin={onOpenPlugin} />)}</ul>
+  </div>
+}
+
+export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh, operationSnapshot, installed, packs, packDetail, plan, execute, activateTab, t }: PluginMarketplaceSettingsTabProps): ReactNode {
   const [model, setModel] = useState<MarketplaceListModel | null>(null)
   const [profile, setProfile] = useState<MarketplaceOperationSnapshot | null>(null)
   const [view, setView] = useState<ViewKey>('discover')
@@ -368,6 +515,10 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const [installedDirty, setInstalledDirty] = useState(true)
   const [installedCategoryFilter, setInstalledCategoryFilter] = useState<CategoryFilter>('all')
   const [installedSort, setInstalledSort] = useState<InstalledSort>('updates')
+  const [packsModel, setPacksModel] = useState<readonly MarketplacePackSummary[] | null>(null)
+  const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
+  const [packDetailState, setPackDetailState] = useState<PackDetailState>({ status: 'idle' })
+  const [packReload, setPackReload] = useState(0)
   const bootstrapped = useRef(false)
   const rowNodes = useRef(new Map<string, HTMLButtonElement>())
   const request = useMemo(() => requestFor(query, category, filter, sort, page), [query, category, filter, sort, page])
@@ -401,6 +552,23 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   }, [view, installed, installedDirty])
 
   useEffect(() => {
+    let current = true
+    void packs().then((next) => { if (current) setPacksModel(next.packs) }).catch(() => { if (current) setPacksModel(previous => previous ?? []) })
+    return () => { current = false }
+  }, [packs, packReload])
+
+  useEffect(() => {
+    if (selectedPackId === null) { setPackDetailState({ status: 'idle' }); return }
+    let current = true
+    setPackDetailState({ status: 'loading' })
+    void packDetail(selectedPackId).then((next) => {
+      if (!current) return
+      setPackDetailState(next.pack === null ? { status: 'missing' } : { status: 'ready', detail: next })
+    }).catch(() => { if (current) setPackDetailState({ status: 'error' }) })
+    return () => { current = false }
+  }, [packDetail, selectedPackId, packReload])
+
+  useEffect(() => {
     if (selectedId === null) { setDetailState({ status: 'idle' }); return }
     let current = true
     setDetailState({ status: 'loading' })
@@ -412,6 +580,7 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   }, [detail, selectedId])
 
   const onSnapshot = (snapshot: MarketplaceOperationSnapshot): void => { setProfile(snapshot); setInstalledDirty(true) }
+  const onPackChanged = (): void => { setPackReload(count => count + 1); setInstalledDirty(true) }
   const onRefresh = (): void => {
     if (model === null) return
     setRefreshing(true); setError(null)
@@ -420,14 +589,15 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
       else setModel(previous => previous === null ? previous : { ...previous, source: update.source, stale: update.stale, lastSuccessfulFetchAt: update.lastSuccessfulFetchAt, error: update.error })
       setError(update.error?.message ?? null)
       return operationSnapshot()
-    }).then((snapshot) => { onSnapshot(snapshot) }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) }).finally(() => { setRefreshing(false) })
+    }).then((snapshot) => { onSnapshot(snapshot); setPackReload(count => count + 1) }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) }).finally(() => { setRefreshing(false) })
   }
   const rowRef = (id: string, node: HTMLButtonElement | null): void => { if (node) rowNodes.current.set(id, node); else rowNodes.current.delete(id) }
-  const openPlugin = (id: string): void => { setInitialAction(null); setSelectedId(id) }
-  const installPlugin = (id: string): void => { setInitialAction('install'); setSelectedId(id) }
-  const removePlugin = (id: string): void => { setInitialAction('remove'); setSelectedId(id) }
+  const openPlugin = (id: string): void => { setInitialAction(null); setSelectedPackId(null); setSelectedId(id) }
+  const installPlugin = (id: string): void => { setInitialAction('install'); setSelectedPackId(null); setSelectedId(id) }
+  const removePlugin = (id: string): void => { setInitialAction('remove'); setSelectedPackId(null); setSelectedId(id) }
+  const openPack = (id: string): void => { setSelectedId(null); setInitialAction(null); setSelectedPackId(id) }
   const backToList = (): void => {
-    const id = selectedId; setSelectedId(null); setInitialAction(null)
+    const id = selectedId; setSelectedId(null); setSelectedPackId(null); setInitialAction(null)
     if (id !== null) requestAnimationFrame(() => { const node = rowNodes.current.get(id); node?.focus(); node?.scrollIntoView?.({ block: 'nearest' }) })
   }
   const retryBootstrap = (): void => {
@@ -437,6 +607,12 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
     setLoadAttempt(attempt => attempt + 1)
   }
 
+  if (selectedPackId !== null) {
+    if (packDetailState.status === 'ready' && packDetailState.detail.pack !== null) {
+      return <div className={css.section}><PackDetailView detail={packDetailState.detail} profile={profile} t={t} onBack={backToList} planOperation={plan} executeOperation={execute} onSnapshot={onSnapshot} onOpenPlugin={openPlugin} onChanged={onPackChanged} /></div>
+    }
+    return <div className={css.section}><button className={css.backButton} type="button" onClick={backToList}><IconChevronLeftOutline14 aria-hidden="true" />{t('detail.back')}</button><p className={css.status} aria-live="polite">{packDetailState.status === 'loading' ? t('detail.loading') : t('detail.error')}</p></div>
+  }
   if (selectedId !== null) {
     if (detailState.status === 'ready') return <div className={css.section}><PluginDetail plugin={detailState.plugin} profile={profile} t={t} onBack={backToList} planOperation={plan} executeOperation={execute} onSnapshot={onSnapshot} activateTab={activateTab} initialAction={initialAction} onInitialActionConsumed={() => { setInitialAction(null) }} /></div>
     return <div className={css.section}><button className={css.backButton} type="button" onClick={backToList}><IconChevronLeftOutline14 aria-hidden="true" />{t('detail.back')}</button><p className={css.status} aria-live="polite">{detailState.status === 'loading' ? t('detail.loading') : t('detail.error')}</p></div>
@@ -485,6 +661,7 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
       <div className={css.statusBar}><span className={css.resultCount} role="status" aria-live="polite">{t('results.count', { count: model.total })}</span><span className={css.freshness}>{freshnessAt ? t(model.source === 'cache' ? 'status.cached' : 'status.updated', { time: formatTime(freshnessAt) }) : null}{model.stale ? ` · ${t('status.stale')}` : ''}{model.catalogStatus === 'unavailable' ? ` · ${t('status.offline')}` : ''}</span><button className={css.refreshButton} type="button" onClick={onRefresh} disabled={refreshing} aria-label={t('refresh')}><IconRefreshOutline16 size={14} aria-hidden="true" />{refreshing ? t('refreshing') : t('refresh')}</button></div>
       {error ? <p className={css.inlineError} role="alert">{t('status.refreshError')}</p> : null}
       {!canInstall ? <CapabilityNotice profile={profile} t={t} /> : null}
+      {packsModel !== null && packsModel.length > 0 ? <PackStrip packs={packsModel} t={t} onOpen={openPack} /> : null}
       <label className={css.search}><IconSearchOutline16 aria-hidden="true" /><span className={css.visuallyHidden}>{t('search')}</span><input type="search" value={query} placeholder={t('search')} onChange={(event) => { setQuery(event.currentTarget.value); setPage(1) }} />{query.length > 0 ? <button className={css.clearSearch} type="button" aria-label={t('clearSearch')} onClick={() => { setQuery(''); setPage(1) }}><IconCloseOutline16 size={12} aria-hidden="true" /></button> : null}</label>
       <div className={css.controls}>
         <div className={css.filterGroup} role="group" aria-label={t('category.label')}>{categoryChips.map(chip => <button key={chip.value} type="button" className={css.filterButton} aria-pressed={category === chip.value} data-active={category === chip.value} onClick={() => { setCategory(chip.value); setPage(1) }}>{chip.label} <span className={css.filterCount}>{chip.count}</span></button>)}</div>

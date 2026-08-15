@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { deriveMarketplaceCategory, detailMarketplaceEntry, installedMarketplacePlugins, queryMarketplaceCatalog } from '../src/catalog-query.ts'
-import type { MarketplaceCatalogEntry, MarketplaceCatalogView, MarketplaceListRequest, MarketplaceOperationSnapshot } from '../src/types.ts'
-import { catalogFixture } from './fixture.ts'
+import {
+  deriveMarketplaceCategory,
+  detailMarketplaceEntry,
+  detailMarketplacePack,
+  installedMarketplacePlugins,
+  listMarketplacePacks,
+  queryMarketplaceCatalog,
+} from '../src/catalog-query.ts'
+import type { MarketplaceCatalogEntry, MarketplaceCatalogView, MarketplaceListRequest, MarketplaceOperationSnapshot, MarketplacePackEntry } from '../src/types.ts'
+import { catalogFixture, packFixture } from './fixture.ts'
 
 const defaultRequest: MarketplaceListRequest = {
   query: '',
@@ -23,10 +30,11 @@ function entry(id: number, overrides: Partial<MarketplaceCatalogEntry> = {}): Ma
   }
 }
 
-function view(entries: readonly MarketplaceCatalogEntry[]): MarketplaceCatalogView {
+function view(entries: readonly MarketplaceCatalogEntry[], packs: readonly MarketplacePackEntry[] = []): MarketplaceCatalogView {
   const catalog = catalogFixture({
-    summary: { entryCount: entries.length, invalidEntryCount: 0 },
+    summary: { entryCount: entries.length, invalidEntryCount: 0, packCount: packs.length },
     entries,
+    packs,
   })
   return {
     status: entries.length === 0 ? 'empty' : 'ready',
@@ -166,5 +174,73 @@ describe('catalog query', () => {
     expect(result.items[2]?.plugin).toBeNull()
     expect(result.items[2]?.state.catalogRelation).toBe('not-in-catalog')
     expect(result.external[0]?.packageName).toBe('@elsewhere/tool')
+  })
+})
+
+describe('solution pack query', () => {
+  const emptySnapshot: MarketplaceOperationSnapshot = {
+    profileName: 'web',
+    busy: false,
+    capabilities: { packageManager: 'pnpm', profileWritable: true, profileName: 'web', message: null },
+    plugins: [],
+    external: [],
+  }
+
+  it('lists only public packs, sorted by stars with a stable name tiebreak', () => {
+    const packs = [
+      packFixture({ repositoryId: '10', repository: { ...packFixture().repository, fullName: 'acme/zeta-pack' }, stars: 5 }),
+      packFixture({ repositoryId: '11', repository: { ...packFixture().repository, fullName: 'acme/alpha-pack' }, stars: 5 }),
+      packFixture({ repositoryId: '12', repository: { ...packFixture().repository, fullName: 'acme/popular-pack' }, stars: 50 }),
+      packFixture({
+        repositoryId: '13',
+        repository: { ...packFixture().repository, fullName: 'acme/broken-pack' },
+        validation: { status: 'invalid', code: 'pack-manifest-invalid', message: 'bad' },
+      }),
+    ]
+    const result = listMarketplacePacks(view([], packs))
+    expect(result.packs.map(pack => pack.repositoryId)).toEqual(['12', '11', '10'])
+    expect(result.packs[0]).toMatchObject({
+      repositoryFullName: 'acme/popular-pack',
+      publisher: 'acme',
+      itemCount: 1,
+    })
+  })
+
+  it('resolves every item status from catalog and profile truth, never from pack claims', () => {
+    const oneClick = entry(1)
+    const scripted = entry(2, { installability: 'manual', installScripts: { prepare: 'node build.js' } })
+    const hardManual = entry(3, { installability: 'manual', installScripts: null })
+    const installed = entry(4)
+    const rejected = entry(5, { validation: { status: 'invalid', code: 'patch-invalid', message: 'bad' } })
+    const pack = packFixture({
+      items: [
+        { fullName: oneClick.repository.fullName, repositoryId: '1' },
+        { fullName: scripted.repository.fullName, repositoryId: '2' },
+        { fullName: hardManual.repository.fullName, repositoryId: '3' },
+        { fullName: installed.repository.fullName, repositoryId: '4' },
+        { fullName: rejected.repository.fullName, repositoryId: '5' },
+        { fullName: 'ghost/not-scanned', repositoryId: null },
+      ],
+    })
+    const snapshot: MarketplaceOperationSnapshot = {
+      ...emptySnapshot,
+      plugins: [{
+        repositoryId: '4', packageName: installed.package.name, state: 'active',
+        installedVersion: '1.0.0', installedSpec: installed.source.ref, installedRepository: installed.repository.fullName,
+        catalogSpec: installed.source.ref, catalogRelation: 'up-to-date', updateAvailable: false,
+      }],
+    }
+    const detail = detailMarketplacePack(view([oneClick, scripted, hardManual, installed, rejected], [pack]), snapshot, '654321')
+    expect(detail.pack?.repositoryId).toBe('654321')
+    expect(detail.items.map(item => item.status)).toEqual([
+      'installable', 'script-gated', 'manual', 'installed', 'unavailable', 'unavailable',
+    ])
+    // Identity comes from the catalog entry; unresolved items keep only the
+    // fullName the author declared.
+    expect(detail.items[0]?.packageName).toBe(oneClick.package.name)
+    expect(detail.items[3]?.state).toBe('active')
+    expect(detail.items[5]).toMatchObject({ fullName: 'ghost/not-scanned', name: null, repositoryUrl: null })
+    expect(detailMarketplacePack(view([], [pack]), emptySnapshot, 'missing'))
+      .toEqual({ pack: null, items: [] })
   })
 })

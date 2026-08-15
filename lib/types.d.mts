@@ -3,9 +3,11 @@
 type MarketplaceValidationStatus = 'valid' | 'invalid' | 'archived';
 /** Stable validation outcome code emitted by the catalog scanner. */
 type MarketplaceValidationCode = 'valid-bundle' | 'repository-archived' | 'package-json-missing' | 'package-json-invalid' | 'bundle-declaration-missing' | 'patch-path-invalid' | 'patch-missing' | 'patch-invalid' | 'github-request-failed';
+/** Stable validation outcome code for solution-pack repositories. */
+type MarketplacePackValidationCode = 'valid-pack' | 'repository-archived' | 'pack-manifest-missing' | 'pack-manifest-invalid' | 'github-request-failed';
 /** Compatibility is never inferred from popularity or repository metadata. */
 type MarketplaceCompatibility = 'compatible' | 'incompatible' | 'unknown';
-/** Installation eligibility remains conservative until the M2 artifact contract exists. */
+/** Installation eligibility: one-click is earned by verified shipped files at the pin. */
 type MarketplaceInstallability = 'browse-only' | 'manual' | 'one-click-eligible';
 /** Statically observable repository risks. */
 type MarketplaceRiskSignal = 'repository-archived' | 'git-source' | 'unpinned-source' | 'lifecycle-script' | 'build-script';
@@ -53,11 +55,50 @@ interface MarketplaceCatalogEntry {
   readonly compatibility: MarketplaceCompatibility;
   readonly installability: MarketplaceInstallability;
   readonly riskSignals: readonly MarketplaceRiskSignal[];
+  /**
+   * Lifecycle script bodies (preinstall/install/postinstall/prepare) declared by
+   * the package, verbatim. Null when none exist. Their presence on a 'manual'
+   * entry marks the consent-gated installation path: the Host may run them only
+   * after the user reviews and approves these exact strings.
+   */
+  readonly installScripts: Readonly<Record<string, string>> | null;
+}
+/** One plugin reference inside a solution pack, keyed by stable repository id. */
+interface MarketplacePackItem {
+  /** owner/repo exactly as the pack author declared it. */
+  readonly fullName: string;
+  /** Stable repository id when the item resolved to a scanned plugin repository. */
+  readonly repositoryId: string | null;
+}
+/** One discovered solution-pack repository (double-tagged dsh-plugin + dsh-plugin-pack). */
+interface MarketplacePackEntry {
+  readonly repositoryId: string;
+  readonly repository: {
+    readonly fullName: string;
+    readonly url: string;
+    readonly defaultBranch: string;
+    readonly commitSha: string | null;
+    readonly archived: boolean;
+  };
+  readonly name: string;
+  readonly description: string | null;
+  readonly items: readonly MarketplacePackItem[];
+  readonly stars: number;
+  readonly repositoryCreatedAt: string;
+  readonly lastCodePushAt: string;
+  readonly firstSeenAt: string;
+  readonly indexedAt: string;
+  readonly validation: {
+    readonly status: MarketplaceValidationStatus;
+    readonly code: MarketplacePackValidationCode;
+    readonly message: string | null;
+  };
 }
 /** Summary kept next to the entries so partial scanner output cannot look complete. */
 interface MarketplaceCatalogSummary {
   readonly entryCount: number;
   readonly invalidEntryCount: number;
+  readonly packCount: number;
 }
 /** Version-one immutable marketplace publication. */
 interface MarketplaceCatalogSnapshot {
@@ -68,6 +109,7 @@ interface MarketplaceCatalogSnapshot {
   readonly integrity: MarketplaceCatalogIntegrity;
   readonly summary: MarketplaceCatalogSummary;
   readonly entries: readonly MarketplaceCatalogEntry[];
+  readonly packs: readonly MarketplacePackEntry[];
 }
 /** Host-side retrieval/cache failure codes safe to show to a Client. */
 type MarketplaceCatalogErrorCode = 'catalog-url-unconfigured' | 'cache-invalid' | 'network-error' | 'http-error' | 'payload-too-large' | 'catalog-invalid' | 'cache-write-failed' | 'service-disposed';
@@ -173,6 +215,54 @@ interface MarketplacePluginDetailResponse {
   readonly entry: MarketplaceCatalogEntry | null;
   readonly state: MarketplaceProfilePluginState | null;
 }
+/** Compact pack row for the discover view. */
+interface MarketplacePackSummary {
+  readonly repositoryId: string;
+  readonly name: string;
+  readonly publisher: string;
+  readonly repositoryFullName: string;
+  readonly repositoryUrl: string;
+  readonly description: string | null;
+  readonly stars: number;
+  readonly itemCount: number;
+  readonly lastCodePushAt: string;
+}
+/** All admitted packs plus the freshness facts that qualify them. */
+interface MarketplacePackListResponse {
+  readonly digest: string;
+  readonly catalogStatus: MarketplaceCatalogView['status'];
+  readonly source: MarketplaceCatalogView['source'];
+  readonly stale: boolean;
+  readonly packs: readonly MarketplacePackSummary[];
+  readonly error: MarketplaceCatalogError | null;
+}
+/** How one pack item relates to the catalog and the current profile. */
+type MarketplacePackItemStatus =
+/** Admitted and one-click-eligible; the pack installer may queue it. */
+'installable' |
+/** Admitted but needs install scripts; consent stays per-plugin, never bulk. */
+'script-gated' |
+/** Admitted but cannot be installed automatically at all; repository link only. */
+'manual' |
+/** Not resolved to an admitted catalog entry; the pack cannot deliver it. */
+'unavailable' |
+/** Already present in the current profile (any installed or pending state). */
+'installed';
+/** One pack item joined with catalog and profile truth. */
+interface MarketplacePackItemView {
+  readonly fullName: string;
+  readonly repositoryId: string | null;
+  readonly status: MarketplacePackItemStatus;
+  readonly name: string | null;
+  readonly packageName: string | null;
+  readonly repositoryUrl: string | null;
+  readonly state: MarketplaceProfilePluginState['state'] | null;
+}
+/** Pack detail with every item's status resolved for the confirm view. */
+interface MarketplacePackDetailResponse {
+  readonly pack: MarketplacePackSummary | null;
+  readonly items: readonly MarketplacePackItemView[];
+}
 /** Opaque, short-lived identifier for one reviewed profile operation. */
 type MarketplacePlanId = string & {
   readonly __marketplacePlanId: unique symbol;
@@ -238,7 +328,7 @@ interface MarketplacePlanRequest {
 /** Stable reason that blocks a requested operation before any profile write. */
 type MarketplacePlanBlockCode = 'catalog-entry-missing' | 'not-one-click-eligible' | 'package-metadata-missing' | 'already-installed' | 'not-installed' | 'restart-required' | 'package-manager-unavailable' | 'profile-not-writable';
 /** Warning disclosed before the user confirms code installation or removal. */
-type MarketplacePlanWarning = 'compatibility-unknown' | 'git-source' | 'code-executes-on-restart' | 'install-scripts-disabled' | 'restart-required' | 'origin-differs';
+type MarketplacePlanWarning = 'compatibility-unknown' | 'git-source' | 'code-executes-on-restart' | 'install-scripts-disabled' | 'install-scripts-run' | 'restart-required' | 'origin-differs';
 /** Exact, expiring operation review produced from the current catalog and profile state. */
 interface MarketplaceOperationPlan {
   readonly status: 'ready' | 'blocked';
@@ -251,15 +341,21 @@ interface MarketplaceOperationPlan {
   readonly packageVersion: string | null;
   readonly sourceRef: string | null;
   readonly commitSha: string | null;
+  /** True when installation must run the declared lifecycle scripts to succeed. */
+  readonly requiresScripts: boolean;
+  /** The exact script bodies the user must approve when requiresScripts is true. */
+  readonly installScripts: Readonly<Record<string, string>> | null;
   readonly warnings: readonly MarketplacePlanWarning[];
   readonly expiresAt: string | null;
 }
 /** Execute one previously reviewed operation exactly once. */
 interface MarketplaceExecuteRequest {
   readonly planId: MarketplacePlanId;
+  /** Required to be exactly true when the reviewed plan carries requiresScripts. */
+  readonly allowScripts?: boolean;
 }
 /** Stable result code for a committed, rejected, or recovered profile operation. */
-type MarketplaceOperationCode = 'succeeded' | 'operation-busy' | 'plan-expired' | 'plan-invalid' | 'profile-state-changed' | 'pnpm-unavailable' | 'pnpm-failed' | 'installed-package-invalid' | 'rollback-failed' | 'service-disposed';
+type MarketplaceOperationCode = 'succeeded' | 'operation-busy' | 'plan-expired' | 'plan-invalid' | 'consent-required' | 'profile-state-changed' | 'profile-write-failed' | 'pnpm-unavailable' | 'pnpm-failed' | 'installed-package-invalid' | 'rollback-failed' | 'service-disposed';
 /** Result of one profile operation, including recovery and the authoritative next snapshot. */
 interface MarketplaceOperationResult {
   readonly status: 'succeeded' | 'failed';
@@ -272,5 +368,5 @@ interface MarketplaceOperationResult {
   readonly snapshot: MarketplaceOperationSnapshot;
 }
 //#endregion
-export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
+export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePackDetailResponse, MarketplacePackEntry, MarketplacePackItem, MarketplacePackItemStatus, MarketplacePackItemView, MarketplacePackListResponse, MarketplacePackSummary, MarketplacePackValidationCode, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
 //# sourceMappingURL=types.d.mts.map

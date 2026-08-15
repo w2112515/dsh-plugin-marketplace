@@ -10,6 +10,8 @@ import type {
   MarketplaceOperationPlan,
   MarketplaceOperationResult,
   MarketplaceOperationSnapshot,
+  MarketplacePackDetailResponse,
+  MarketplacePackListResponse,
   MarketplacePlanRequest,
   MarketplacePluginDetailResponse,
   MarketplacePluginSummary,
@@ -23,6 +25,9 @@ export type {
   MarketplaceOperationPlan,
   MarketplaceOperationResult,
   MarketplaceOperationSnapshot,
+  MarketplacePackItemStatus,
+  MarketplacePackItemView,
+  MarketplacePackSummary,
   MarketplacePlanRequest,
 } from '../types.ts'
 
@@ -34,8 +39,10 @@ export interface MarketplaceCatalogRemoteFace {
   refresh: (request: { readonly request: MarketplaceListRequest; readonly currentDigest: string }) => Promise<MarketplaceRefreshResponse>
   operationSnapshot: () => Promise<MarketplaceOperationSnapshot>
   installed: () => Promise<MarketplaceInstalledResponse>
+  packs: () => Promise<MarketplacePackListResponse>
+  packDetail: (request: { readonly repositoryId: string }) => Promise<MarketplacePackDetailResponse>
   plan: (request: MarketplacePlanRequest) => Promise<MarketplaceOperationPlan>
-  execute: (request: { readonly planId: NonNullable<MarketplaceOperationPlan['planId']> }) => Promise<MarketplaceOperationResult>
+  execute: (request: { readonly planId: NonNullable<MarketplaceOperationPlan['planId']>; readonly allowScripts?: boolean }) => Promise<MarketplaceOperationResult>
 }
 
 /** One compact Host-owned catalog row. */
@@ -83,6 +90,7 @@ export interface MarketplacePluginDetailModel {
   readonly compatibility: MarketplaceCatalogEntry['compatibility']
   readonly installability: MarketplaceCatalogEntry['installability']
   readonly riskSignals: MarketplaceCatalogEntry['riskSignals']
+  readonly installScripts: Readonly<Record<string, string>> | null
   readonly sourceRef: string
 }
 
@@ -143,6 +151,7 @@ export function toPluginDetailModel(response: MarketplacePluginDetailResponse): 
     compatibility: entry.compatibility,
     installability: entry.installability,
     riskSignals: entry.riskSignals,
+    installScripts: entry.installScripts,
     sourceRef: entry.source.ref,
   }
 }
@@ -184,6 +193,18 @@ export function planMarketplaceOperation(remote: MarketplaceCatalogRemoteFace, r
   return remote.plan(request)
 }
 
-export function executeMarketplaceOperation(remote: MarketplaceCatalogRemoteFace, planId: NonNullable<MarketplaceOperationPlan['planId']>): Promise<MarketplaceOperationResult> {
-  return remote.execute({ planId })
+export function executeMarketplaceOperation(
+  remote: MarketplaceCatalogRemoteFace,
+  planId: NonNullable<MarketplaceOperationPlan['planId']>,
+  allowScripts = false,
+): Promise<MarketplaceOperationResult> {
+  return remote.execute({ planId, ...(allowScripts ? { allowScripts: true } : {}) })
+}
+
+export function listMarketplacePacks(remote: MarketplaceCatalogRemoteFace): Promise<MarketplacePackListResponse> {
+  return remote.packs()
+}
+
+export function detailMarketplacePack(remote: MarketplaceCatalogRemoteFace, repositoryId: string): Promise<MarketplacePackDetailResponse> {
+  return remote.packDetail({ repositoryId })
 }

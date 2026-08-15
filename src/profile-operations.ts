@@ -286,6 +286,8 @@ function emptyPlan(
     packageVersion: entry?.package.version ?? null,
     sourceRef: entry?.source.ref ?? null,
     commitSha: entry?.repository.commitSha ?? null,
+    requiresScripts: false,
+    installScripts: null,
     warnings: [],
     expiresAt: null,
   }
@@ -319,6 +321,8 @@ interface InstallRecord {
   readonly spec: string
   readonly commitSha: string | null
   readonly installedAt: string
+  /** True when the user explicitly allowed lifecycle scripts for this install. */
+  readonly scripts: boolean
 }
 
 const INSTALL_STATE_FILE = 'dsh-plugin-marketplace.installs.json'
@@ -334,6 +338,7 @@ function readInstallRecords(profileDir: string): Readonly<Record<string, Install
         spec: record.spec,
         commitSha: typeof record.commitSha === 'string' ? record.commitSha.toLowerCase() : null,
         installedAt: typeof record.installedAt === 'string' ? record.installedAt : '',
+        scripts: record.scripts === true,
       } satisfies InstallRecord]]
     }))
   } catch {
@@ -366,6 +371,53 @@ function catalogRelationFor(
 
 function marketplacePlanId(value: string): MarketplacePlanId {
   return value as MarketplacePlanId
+}
+
+const WORKSPACE_FILE = 'pnpm-workspace.yaml'
+
+function quoteYamlKey(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+/** True for an allowBuilds line granting this package, whatever spec it pins. */
+function isGrantLineFor(line: string, packageName: string): boolean {
+  return line.trimStart().startsWith(`'${`${packageName}@`.replace(/'/g, "''")}`)
+}
+
+/**
+ * pnpm 11 runs a dependency's lifecycle scripts only when that dependency is
+ * named in the profile's allowBuilds. Consent is granted for exactly one
+ * name@spec key — the reviewed pin — so an approval never silently covers a
+ * different commit, and every other package stays script-blocked by default.
+ */
+function grantBuildConsent(text: string, packageName: string, sourceRef: string): string {
+  const grantLine = `  ${quoteYamlKey(`${packageName}@${sourceRef}`)}: true`
+  const lines = text.split('\n')
+  const headerIndex = lines.findIndex(line => /^allowBuilds:\s*$/.test(line))
+  if (headerIndex === -1) {
+    if (/^allowBuilds:/m.test(text)) throw new Error('pnpm-workspace.yaml allowBuilds uses an unsupported layout')
+    const base = text.endsWith('\n') ? text.slice(0, -1) : text
+    return `${base}\n\nallowBuilds:\n${grantLine}\n`
+  }
+  const kept = lines.filter(line => !isGrantLineFor(line, packageName))
+  const at = kept.findIndex(line => /^allowBuilds:\s*$/.test(line))
+  kept.splice(at + 1, 0, grantLine)
+  return kept.join('\n')
+}
+
+/** Drop this package's allowBuilds grants, and the block header when it turns empty. */
+function revokeBuildConsent(text: string, packageName: string): string {
+  const kept = text.split('\n').filter(line => !isGrantLineFor(line, packageName))
+  const at = kept.findIndex(line => /^allowBuilds:\s*$/.test(line))
+  if (at !== -1) {
+    let cursor = at + 1
+    while (cursor < kept.length && kept[cursor]?.trim() === '') cursor += 1
+    const next = kept[cursor]
+    if (next === undefined || (!next.startsWith(' ') && !next.startsWith('\t'))) {
+      kept.splice(at, 1)
+    }
+  }
+  return kept.join('\n')
 }
 
 function hasExactReviewedSource(entry: MarketplaceCatalogEntry): boolean {
@@ -497,15 +549,22 @@ export class MarketplaceProfileOperations {
     const origin = installedOrigin(state.installedSpec)
     const sameOrigin = origin !== null && sameRepository(origin, entry)
     let action: 'install' | 'update' | 'remove'
+    let requiresScripts = false
     if (request.action === 'remove') {
       if (state.installedSpec === null) return emptyPlan(request, this.options.runtime.profileName, 'not-installed', entry)
       action = 'remove'
     } else {
-      if (entry.installability !== 'one-click-eligible') {
-        return emptyPlan(request, this.options.runtime.profileName, 'not-one-click-eligible', entry)
-      }
       if (entry.package.name === null || entry.package.version === null || !hasExactReviewedSource(entry)) {
         return emptyPlan(request, this.options.runtime.profileName, 'package-metadata-missing', entry)
+      }
+      // The consent gate: an entry whose install targets are not shipped can
+      // still be installed, but only by running its declared lifecycle scripts —
+      // which the user must review in the plan and approve at execute time.
+      if (entry.installability !== 'one-click-eligible') {
+        if (entry.installability !== 'manual' || entry.installScripts === null) {
+          return emptyPlan(request, this.options.runtime.profileName, 'not-one-click-eligible', entry)
+        }
+        requiresScripts = true
       }
       if (state.state === 'active' && sameOrigin && !state.updateAvailable) {
         return emptyPlan(request, this.options.runtime.profileName, 'already-installed', entry)
@@ -514,7 +573,7 @@ export class MarketplaceProfileOperations {
     }
     const warnings: MarketplacePlanWarning[] = ['code-executes-on-restart', 'restart-required']
     if (action !== 'remove') {
-      warnings.unshift('git-source', 'install-scripts-disabled')
+      warnings.unshift('git-source', requiresScripts ? 'install-scripts-run' : 'install-scripts-disabled')
       if (entry.compatibility === 'unknown') warnings.unshift('compatibility-unknown')
       if (state.installedSpec !== null && !sameOrigin) warnings.push('origin-differs')
     }
@@ -531,6 +590,8 @@ export class MarketplaceProfileOperations {
       packageVersion: entry.package.version,
       sourceRef: entry.source.ref,
       commitSha: entry.repository.commitSha,
+      requiresScripts,
+      installScripts: requiresScripts ? entry.installScripts : null,
       warnings,
       expiresAt,
     }
@@ -551,6 +612,9 @@ export class MarketplaceProfileOperations {
     if (stored === undefined) return Promise.resolve(this.failure('plan-invalid'))
     if (Date.parse(stored.plan.expiresAt ?? '') <= this.now()) {
       return Promise.resolve(this.failure('plan-expired'))
+    }
+    if (stored.plan.requiresScripts && request.allowScripts !== true) {
+      return Promise.resolve(this.failure('consent-required', stored.plan))
     }
     const current = this.options.catalog()
     const entry = current?.entries.find(item => item.repositoryId === stored.plan.repositoryId)
@@ -601,13 +665,34 @@ export class MarketplaceProfileOperations {
     const backups = await Promise.all([
       backup(join(this.options.runtime.dir, 'package.json')),
       backup(join(this.options.runtime.dir, 'pnpm-lock.yaml')),
-      backup(join(this.options.runtime.dir, 'pnpm-workspace.yaml')),
+      backup(join(this.options.runtime.dir, WORKSPACE_FILE)),
     ])
+    // A consented script install first records its exact-pin grant; if that
+    // write fails we stop before pnpm runs anything rather than installing a
+    // package whose build never happened.
+    if (plan.action !== 'remove' && plan.requiresScripts) {
+      try {
+        const workspacePath = join(this.options.runtime.dir, WORKSPACE_FILE)
+        const current = await readFile(workspacePath, 'utf8')
+        await writeFileAtomic(
+          workspacePath,
+          grantBuildConsent(current, packageName, plan.sourceRef as string),
+          { mode: 0o600, dirMode: 0o700 },
+        )
+      } catch {
+        const rollback = await this.rollback(backups)
+        return this.failure('profile-write-failed', plan, rollback)
+      }
+    }
     // pnpm remove rejects --ignore-scripts (it never runs lifecycle scripts);
-    // add keeps it so third-party install hooks never execute.
+    // plain installs keep it so third-party hooks never execute; a consented
+    // install drops it exactly once, with allowBuilds limiting execution to
+    // the reviewed package@spec.
     const args = plan.action === 'remove'
       ? ['remove', packageName]
-      : ['add', '--ignore-scripts', '--save-exact', plan.sourceRef as string]
+      : plan.requiresScripts
+        ? ['add', '--save-exact', plan.sourceRef as string]
+        : ['add', '--ignore-scripts', '--save-exact', plan.sourceRef as string]
     const command = await this.runPnpm(args, this.options.runtime.dir, signal)
     if (this.disposed) {
       const rollback = await this.rollback(backups)
@@ -653,11 +738,22 @@ export class MarketplaceProfileOperations {
       const records = { ...readInstallRecords(this.options.runtime.dir) }
       if (plan.action === 'remove') {
         delete records[packageName]
+        try {
+          const workspacePath = join(this.options.runtime.dir, WORKSPACE_FILE)
+          const current = await readFile(workspacePath, 'utf8')
+          const next = revokeBuildConsent(current, packageName)
+          if (next !== current) {
+            await writeFileAtomic(workspacePath, next, { mode: 0o600, dirMode: 0o700 })
+          }
+        } catch {
+          // A stale grant for a spec that is no longer installed is inert.
+        }
       } else {
         records[packageName] = {
           spec: plan.sourceRef as string,
           commitSha: plan.commitSha?.toLowerCase() ?? null,
           installedAt: new Date(this.now()).toISOString(),
+          scripts: plan.requiresScripts,
         }
       }
       await writeFileAtomic(

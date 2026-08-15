@@ -7,9 +7,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import {
   bootstrapMarketplace,
   detailMarketplace,
+  detailMarketplacePack,
   executeMarketplaceOperation,
   installedMarketplace,
   listMarketplace,
+  listMarketplacePacks,
   planMarketplaceOperation,
   readOperationSnapshot,
   refreshMarketplace,
@@ -52,6 +54,8 @@ const remote: MarketplaceCatalogRemoteFace = {
   refresh: request => apiCall('refresh', request),
   operationSnapshot: () => apiCall('operationSnapshot'),
   installed: () => apiCall('installed'),
+  packs: () => apiCall('packs'),
+  packDetail: request => apiCall('packDetail', request),
   plan: request => apiCall('plan', request),
   execute: request => apiCall('execute', request),
 }
@@ -75,8 +79,10 @@ export function apply(ctx: Context): void {
     refresh: (request, currentDigest) => refreshMarketplace(remote, request, currentDigest),
     operationSnapshot: () => readOperationSnapshot(remote),
     installed: () => installedMarketplace(remote),
+    packs: () => listMarketplacePacks(remote),
+    packDetail: repositoryId => detailMarketplacePack(remote, repositoryId),
     plan: request => planMarketplaceOperation(remote, request),
-    execute: planId => executeMarketplaceOperation(remote, planId),
+    execute: (planId, allowScripts) => executeMarketplaceOperation(remote, planId, allowScripts),
     activateTab: activateSettingsPluginTab,
   })
   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({

@@ -184,6 +184,23 @@ export class GitHubMarketplaceClient {
     }
   }
 
+  /**
+   * List every blob path in one commit via a single recursive tree call — the
+   * cheapest existence proof for a package's declared install targets. Callers
+   * must fall back to per-file checks when GitHub truncates a giant tree.
+   */
+  async getTreePaths(fullName: string, ref: string): Promise<{ paths: ReadonlySet<string>; truncated: boolean }> {
+    const encodedName = fullName.split('/').map(encodeURIComponent).join('/')
+    const response = await this.request(`/repos/${encodedName}/git/trees/${encodeURIComponent(ref)}?recursive=1`)
+    const body: unknown = await response.json()
+    if (!isRecord(body) || !Array.isArray(body.tree)) throw new TypeError('GitHub tree response is invalid')
+    const paths = new Set<string>()
+    for (const node of body.tree) {
+      if (isRecord(node) && node.type === 'blob' && typeof node.path === 'string') paths.add(node.path)
+    }
+    return { paths, truncated: body.truncated === true }
+  }
+
   /** Resolve immutable default-branch commit ids in bounded GraphQL batches. */
   async resolveDefaultBranchCommits(
     repositories: readonly GitHubRepository[],

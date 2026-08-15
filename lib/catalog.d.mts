@@ -18,6 +18,9 @@ declare function computeMarketplaceCatalogDigest(catalog: MarketplaceCatalogSnap
 declare function sealMarketplaceCatalog(catalog: MarketplaceCatalogSnapshot): MarketplaceCatalogSnapshot;
 /**
  * Parse, strictly validate, and verify a complete catalog publication.
+ * The integrity digest is verified over the exact wire payload; newer optional
+ * fields (packs, installScripts) are normalized onto the result afterwards so
+ * older cached catalogs keep parsing and verifying.
  * @param text - UTF-8 JSON text downloaded from the publication or cache.
  * @returns Strictly validated catalog with a verified logical digest.
  */

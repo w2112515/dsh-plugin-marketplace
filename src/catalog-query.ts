@@ -8,6 +8,12 @@ import type {
   MarketplaceListRequest,
   MarketplaceListResponse,
   MarketplaceOperationSnapshot,
+  MarketplacePackDetailResponse,
+  MarketplacePackEntry,
+  MarketplacePackItemStatus,
+  MarketplacePackItemView,
+  MarketplacePackListResponse,
+  MarketplacePackSummary,
   MarketplacePluginDetailResponse,
   MarketplacePluginSummary,
   MarketplaceProfilePluginState,
@@ -250,4 +256,92 @@ export function installedMarketplacePlugins(
     })),
     external: snapshot.external,
   }
+}
+
+/** Conservative admission defense for packs mirrors the plugin defense. */
+export function isPublicMarketplacePack(pack: MarketplacePackEntry): boolean {
+  return pack.validation.status === 'valid' && !pack.repository.archived
+}
+
+function packSummary(pack: MarketplacePackEntry): MarketplacePackSummary {
+  const separator = pack.repository.fullName.indexOf('/')
+  return {
+    repositoryId: pack.repositoryId,
+    name: pack.name,
+    publisher: separator === -1 ? pack.repository.fullName : pack.repository.fullName.slice(0, separator),
+    repositoryFullName: pack.repository.fullName,
+    repositoryUrl: pack.repository.url,
+    description: pack.description,
+    stars: pack.stars,
+    itemCount: pack.items.length,
+    lastCodePushAt: pack.lastCodePushAt,
+  }
+}
+
+/** List admitted packs, most-starred first; packs are few and unpaged by design. */
+export function listMarketplacePacks(view: MarketplaceCatalogView): MarketplacePackListResponse {
+  const packs = (view.catalog?.packs ?? [])
+    .filter(isPublicMarketplacePack)
+    .sort((left, right) => right.stars - left.stars
+      || compareText(left.repository.fullName, right.repository.fullName))
+    .map(packSummary)
+  return {
+    digest: view.catalog?.integrity.digest ?? '',
+    catalogStatus: view.catalog === null ? view.status : 'ready',
+    source: view.source,
+    stale: view.stale,
+    packs,
+    error: view.error,
+  }
+}
+
+function packItemStatus(
+  entry: MarketplaceCatalogEntry | undefined,
+  state: MarketplaceProfilePluginState | undefined,
+): MarketplacePackItemStatus {
+  if (state !== undefined) return 'installed'
+  if (entry === undefined) return 'unavailable'
+  if (entry.installability === 'one-click-eligible') return 'installable'
+  // Consent-gated only when the host can actually plan it: pinned, named, versioned.
+  if (entry.installScripts !== null && entry.repository.commitSha !== null
+    && entry.package.name !== null && entry.package.version !== null) {
+    return 'script-gated'
+  }
+  return 'manual'
+}
+
+/**
+ * Resolve one pack against catalog and profile truth. Every item keeps its
+ * declared identity; the status chip is derived, never asserted by the pack.
+ */
+export function detailMarketplacePack(
+  view: MarketplaceCatalogView,
+  snapshot: MarketplaceOperationSnapshot,
+  repositoryId: string,
+): MarketplacePackDetailResponse {
+  const pack = view.catalog?.packs.find(candidate => (
+    candidate.repositoryId === repositoryId && isPublicMarketplacePack(candidate)
+  )) ?? null
+  if (pack === null) return { pack: null, items: [] }
+  const admitted = new Map<string, MarketplaceCatalogEntry>()
+  for (const entry of view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []) {
+    admitted.set(entry.repositoryId, entry)
+  }
+  const states = new Map(snapshot.plugins.flatMap(state => (
+    state.repositoryId === null ? [] : [[state.repositoryId, state] as const]
+  )))
+  const items: MarketplacePackItemView[] = pack.items.map((item) => {
+    const entry = item.repositoryId === null ? undefined : admitted.get(item.repositoryId)
+    const state = entry === undefined ? undefined : states.get(entry.repositoryId)
+    return {
+      fullName: item.fullName,
+      repositoryId: entry?.repositoryId ?? item.repositoryId,
+      status: packItemStatus(entry, state),
+      name: entry === undefined ? null : (entry.package.name ?? entry.repository.fullName),
+      packageName: entry?.package.name ?? null,
+      repositoryUrl: entry?.repository.url ?? null,
+      state: state?.state ?? null,
+    }
+  })
+  return { pack: packSummary(pack), items }
 }

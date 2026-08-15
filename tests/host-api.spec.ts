@@ -7,8 +7,8 @@ import type { AddressInfo } from 'node:net'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { apply, type Config } from '../src/index.ts'
-import type { MarketplaceBootstrapResponse, MarketplaceListResponse, MarketplaceRefreshResponse } from '../src/types.ts'
-import { catalogFixture } from './fixture.ts'
+import type { MarketplaceBootstrapResponse, MarketplaceListResponse, MarketplacePackDetailResponse, MarketplacePackListResponse, MarketplaceRefreshResponse } from '../src/types.ts'
+import { catalogFixture, packFixture } from './fixture.ts'
 
 const roots: string[] = []
 const servers: Server[] = []
@@ -63,7 +63,10 @@ describe('out-of-tree Host API', () => {
       else process.env.DSH_HOME = previousHome
     })
 
-    const catalog = catalogFixture()
+    const catalog = catalogFixture({
+      packs: [packFixture()],
+      summary: { entryCount: 1, invalidEntryCount: 0, packCount: 1 },
+    })
     let catalogRequests = 0
     const catalogServer = await listen((req, res) => {
       catalogRequests += 1
@@ -128,6 +131,41 @@ describe('out-of-tree Host API', () => {
       method: 'installed',
     })
     expect(installed.body.value).toMatchObject({ items: [], external: [] })
+
+    const packs = await post<{ ok: true; value: MarketplacePackListResponse }>(apiServer.origin, {
+      method: 'packs',
+    })
+    expect(packs.body.value.packs).toHaveLength(1)
+    expect(packs.body.value.packs[0]).toMatchObject({
+      repositoryId: '654321',
+      name: 'DSH Essentials',
+      publisher: 'example',
+      itemCount: 1,
+    })
+
+    const packDetail = await post<{ ok: true; value: MarketplacePackDetailResponse }>(apiServer.origin, {
+      method: 'packDetail', params: { repositoryId: '654321' },
+    })
+    expect(packDetail.body.value.pack?.repositoryId).toBe('654321')
+    expect(packDetail.body.value.items).toEqual([{
+      fullName: 'example/dsh-weather-bundle',
+      repositoryId: '123456',
+      status: 'installable',
+      name: '@example/dsh-weather-bundle',
+      packageName: '@example/dsh-weather-bundle',
+      repositoryUrl: 'https://github.com/example/dsh-weather-bundle',
+      state: null,
+    }])
+
+    const missingPack = await post<{ ok: true; value: MarketplacePackDetailResponse }>(apiServer.origin, {
+      method: 'packDetail', params: { repositoryId: 'missing' },
+    })
+    expect(missingPack.body.value).toEqual({ pack: null, items: [] })
+
+    const badPackDetail = await post<{ ok: false; error: { code: string } }>(apiServer.origin, {
+      method: 'packDetail', params: {},
+    })
+    expect(badPackDetail).toMatchObject({ status: 400, body: { ok: false, error: { code: 'request-invalid' } } })
 
     const badCategory = await post<{ ok: false; error: { code: string } }>(apiServer.origin, {
       method: 'list', params: { ...request, category: 'invented' },

@@ -10,6 +10,7 @@ import type {
 } from './plugin-marketplace-github.ts'
 import {
   DEFAULT_MARKETPLACE_TOPIC,
+  MARKETPLACE_PACK_TOPIC,
   runMarketplaceScan,
   type MarketplaceGitHubReader,
 } from './plugin-marketplace-scan.ts'
@@ -38,8 +39,13 @@ function repository(id: number, name: string, overrides: Partial<GitHubRepositor
   }
 }
 
+function packRepository(id: number, name: string, overrides: Partial<GitHubRepository> = {}): GitHubRepository {
+  return repository(id, name, { topics: [DEFAULT_MARKETPLACE_TOPIC, MARKETPLACE_PACK_TOPIC], ...overrides })
+}
+
 class FixtureGitHub implements MarketplaceGitHubReader {
   readonly contentCalls: string[] = []
+  readonly treeCalls: string[] = []
   incomplete = false
   notModified = false
   /** Ids GitHub Search fails to return this run, simulating paging drift. */
@@ -78,19 +84,43 @@ class FixtureGitHub implements MarketplaceGitHubReader {
     return Object.fromEntries(repositories.map(item => [item.id, item.id.padStart(40, '0')]))
   }
 
+  /** The pinned commit's tree; repos named *-unshipped lack the built entry file. */
+  async getTreePaths(fullName: string, _ref: string): Promise<{ paths: ReadonlySet<string>; truncated: boolean }> {
+    this.treeCalls.push(fullName)
+    const paths = new Set(['package.json', 'cordis.patch.yml', 'dsh.pack.json', 'lib/index.mjs'])
+    if (fullName.includes('direct-file')) paths.add('lib/plugin.mjs')
+    if (fullName.endsWith('-unshipped')) paths.delete('lib/index.mjs')
+    return { paths, truncated: fullName.endsWith('/truncated-tree') }
+  }
+
   async getContent(fullName: string, path: string, _ref: string, etag: string | null): Promise<GitHubContentResult> {
     this.contentCalls.push(`${fullName}/${path}`)
     if (this.notModified && etag !== null) return { status: 'not-modified', etag }
     if (fullName.endsWith('/invalid') && path === 'cordis.patch.yml') {
       return { status: 'not-found', etag: null }
     }
+    if (path === 'dsh.pack.json') {
+      if (fullName.endsWith('/pack-no-manifest')) return { status: 'not-found', etag: null }
+      if (fullName.endsWith('/pack-invalid')) return { status: 'ok', etag: '"pack"', text: '{ "schemaVersion": 1, "items": "not-an-array" }' }
+      if (fullName.endsWith('/pack-empty')) return { status: 'ok', etag: '"pack"', text: '{ "schemaVersion": 1, "items": [] }' }
+      return {
+        status: 'ok',
+        etag: `"pack-${fullName}"`,
+        text: JSON.stringify({
+          schemaVersion: 1,
+          name: 'Fixture Pack',
+          description: 'A curated fixture set',
+          items: ['fixture/valid', 'fixture/not-scanned'],
+        }),
+      }
+    }
     if (path === 'package.json') {
       const risky = fullName.endsWith('/risky')
+      const scripted = fullName.endsWith('/scripted-unshipped')
       const root = fullName.endsWith('/dsh-root')
       const noHostExport = fullName.endsWith('/no-host-export')
       const clientExportMissing = fullName.endsWith('/client-export-missing')
       const stringExport = fullName.endsWith('/string-export')
-      const patchFileUndeclared = fullName.endsWith('/patch-file-undeclared')
       return {
         status: 'ok',
         etag: `"package-${fullName}"`,
@@ -98,8 +128,7 @@ class FixtureGitHub implements MarketplaceGitHubReader {
           name: `@fixture/${fullName.split('/')[1]}`,
           version: '1.0.0',
           keywords: ['dsh'],
-          scripts: risky ? { prepare: 'node should-never-run.js' } : {},
-          files: patchFileUndeclared ? ['lib/index.mjs'] : ['lib/index.mjs', 'cordis.patch.yml'],
+          scripts: risky || scripted ? { prepare: 'node should-never-run.js' } : {},
           ...(root ? {} : {
             ...(noHostExport ? {} : { exports: stringExport ? './lib/index.mjs' : { '.': './lib/index.mjs' } }),
             dsh: {
@@ -110,7 +139,7 @@ class FixtureGitHub implements MarketplaceGitHubReader {
         }),
       }
     }
-    if (fullName.endsWith('/direct-file-undeclared') && path === 'cordis.patch.yml') {
+    if (fullName.includes('direct-file') && path === 'cordis.patch.yml') {
       return {
         status: 'ok',
         etag: `"patch-${fullName}"`,
@@ -157,25 +186,98 @@ describe('plugin marketplace scanner', () => {
       ...files,
       now: () => new Date('2026-08-15T00:00:00.000Z'),
     })
-    expect(catalog.summary).toEqual({ entryCount: 2, invalidEntryCount: 0 })
+    expect(catalog.summary).toEqual({ entryCount: 2, invalidEntryCount: 0, packCount: 0 })
     expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/valid'))).toMatchObject({
       validation: { status: 'valid', code: 'valid-bundle' },
       compatibility: 'unknown',
       installability: 'one-click-eligible',
       riskSignals: ['git-source'],
+      installScripts: null,
     })
-    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/risky'))?.riskSignals)
-      .toEqual(['git-source', 'lifecycle-script'])
-    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/risky'))?.installability)
-      .toBe('manual')
+    // Ships built output at the pin: one-click installs run with
+    // --ignore-scripts, so the prepare script is a displayed risk, not a blocker.
+    const risky = catalog.entries.find(entry => entry.repository.fullName.endsWith('/risky'))
+    expect(risky?.riskSignals).toEqual(['git-source', 'lifecycle-script'])
+    expect(risky?.installability).toBe('one-click-eligible')
+    expect(risky?.installScripts).toEqual({ prepare: 'node should-never-run.js' })
     expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/invalid'))).toBeUndefined()
     const rejected = JSON.parse(await readFile(files.rejectedPath, 'utf8'))
-    expect(rejected.summary).toEqual({ entryCount: 1, invalidEntryCount: 1 })
+    expect(rejected.summary).toEqual({ entryCount: 1, invalidEntryCount: 1, packCount: 0 })
     expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/invalid'))).toMatchObject({
       validation: { status: 'invalid', code: 'patch-missing' },
       installability: 'browse-only',
     })
     expect(JSON.parse(await readFile(files.outputPath, 'utf8'))).toEqual(catalog)
+  })
+
+  it('grants one-click only when install targets exist at the pinned commit', async () => {
+    const files = await paths()
+    const github = new FixtureGitHub([
+      repository(1, 'active'),
+      repository(2, 'string-export'),
+      repository(3, 'direct-file-shipped'),
+      repository(4, 'no-host-export'),
+      repository(5, 'client-export-missing'),
+      repository(6, 'lib-unshipped'),
+      repository(7, 'scripted-unshipped'),
+      repository(8, 'truncated-tree'),
+    ])
+    const catalog = await runMarketplaceScan({
+      client: github,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(catalog.summary).toEqual({ entryCount: 8, invalidEntryCount: 0, packCount: 0 })
+    for (const name of ['active', 'string-export', 'direct-file-shipped']) {
+      expect(catalog.entries.find(entry => entry.repository.fullName.endsWith(`/${name}`))?.installability)
+        .toBe('one-click-eligible')
+    }
+    // Giant-tree fallback: truncated trees degrade to per-file existence reads.
+    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/truncated-tree'))?.installability)
+      .toBe('one-click-eligible')
+    for (const name of ['no-host-export', 'client-export-missing', 'lib-unshipped']) {
+      expect(catalog.entries.find(entry => entry.repository.fullName.endsWith(`/${name}`))?.installability)
+        .toBe('manual')
+    }
+    // Unshipped + lifecycle scripts: the consent-gated path, scripts verbatim.
+    const scripted = catalog.entries.find(entry => entry.repository.fullName.endsWith('/scripted-unshipped'))
+    expect(scripted?.installability).toBe('manual')
+    expect(scripted?.installScripts).toEqual({ prepare: 'node should-never-run.js' })
+    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/lib-unshipped'))?.installScripts)
+      .toBeNull()
+    expect(github.contentCalls.filter(call => call.includes('/active/')))
+      .toEqual(['fixture/active/package.json', 'fixture/active/cordis.patch.yml'])
+  })
+
+  it('keeps dsh-root and request failures out of the public catalog', async () => {
+    const files = await paths()
+    const github = new FixtureGitHub([
+      repository(1, 'active'),
+      repository(2, 'dsh-root'),
+      repository(3, 'archived', { archived: true }),
+      repository(7, 'request-failed'),
+    ])
+    const originalGetContent = github.getContent.bind(github)
+    github.getContent = async (...args) => {
+      if (args[0].endsWith('/request-failed')) throw new Error('temporary GitHub failure')
+      return originalGetContent(...args)
+    }
+    const catalog = await runMarketplaceScan({
+      client: github,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(catalog.summary).toEqual({ entryCount: 1, invalidEntryCount: 0, packCount: 0 })
+    const rejected = JSON.parse(await readFile(files.rejectedPath, 'utf8'))
+    expect(rejected.summary).toEqual({ entryCount: 3, invalidEntryCount: 3, packCount: 0 })
+    expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/dsh-root')))
+      .toMatchObject({ validation: { code: 'bundle-declaration-missing' } })
+    expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/archived')))
+      .toMatchObject({ validation: { status: 'archived', code: 'repository-archived' } })
+    expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/request-failed')))
+      .toMatchObject({ validation: { status: 'invalid', code: 'github-request-failed' } })
   })
 
   it('validates repositories with bounded concurrency', async () => {
@@ -204,51 +306,6 @@ describe('plugin marketplace scanner', () => {
     expect(peak).toBeLessThanOrEqual(12)
   })
 
-  it('keeps dsh-root and request failures out of the public catalog, and requires export/file evidence for one-click', async () => {
-    const files = await paths()
-    const github = new FixtureGitHub([
-      repository(1, 'active'),
-      repository(2, 'dsh-root'),
-      repository(3, 'archived', { archived: true }),
-      repository(4, 'no-host-export'),
-      repository(5, 'client-export-missing'),
-      repository(6, 'direct-file-undeclared'),
-      repository(7, 'request-failed'),
-      repository(8, 'string-export'),
-      repository(9, 'patch-file-undeclared'),
-    ])
-    const originalGetContent = github.getContent.bind(github)
-    github.getContent = async (...args) => {
-      if (args[0].endsWith('/request-failed')) throw new Error('temporary GitHub failure')
-      return originalGetContent(...args)
-    }
-    const catalog = await runMarketplaceScan({
-      client: github,
-      topic: DEFAULT_MARKETPLACE_TOPIC,
-      ...files,
-      now: () => new Date('2026-08-15T00:00:00.000Z'),
-    })
-    expect(catalog.summary).toEqual({ entryCount: 6, invalidEntryCount: 0 })
-    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/active'))?.installability)
-      .toBe('one-click-eligible')
-    expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/string-export'))?.installability)
-      .toBe('one-click-eligible')
-    expect(github.contentCalls.filter(call => call.includes('/active/')))
-      .toEqual(['fixture/active/package.json', 'fixture/active/cordis.patch.yml'])
-    for (const name of ['no-host-export', 'client-export-missing', 'direct-file-undeclared', 'patch-file-undeclared']) {
-      expect(catalog.entries.find(entry => entry.repository.fullName.endsWith(`/${name}`))?.installability)
-        .toBe('manual')
-    }
-    const rejected = JSON.parse(await readFile(files.rejectedPath, 'utf8'))
-    expect(rejected.summary).toEqual({ entryCount: 3, invalidEntryCount: 3 })
-    expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/dsh-root')))
-      .toMatchObject({ validation: { code: 'bundle-declaration-missing' } })
-    expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/archived')))
-      .toMatchObject({ validation: { status: 'archived', code: 'repository-archived' } })
-    expect(rejected.entries.find((entry: { repository: { fullName: string } }) => entry.repository.fullName.endsWith('/request-failed')))
-      .toMatchObject({ validation: { status: 'invalid', code: 'github-request-failed' } })
-  })
-
   it('reuses valid state, retries invalid entries, and accepts ETag 304 after a push', async () => {
     const files = await paths()
     const repositories = [repository(1, 'valid'), repository(3, 'invalid')]
@@ -267,6 +324,7 @@ describe('plugin marketplace scanner', () => {
       now: () => new Date('2026-08-15T00:00:00.000Z'),
     })
     expect(second.contentCalls.some(call => call.includes('/valid/'))).toBe(false)
+    expect(second.treeCalls).toEqual([])
     expect(second.contentCalls.some(call => call.includes('/invalid/'))).toBe(true)
 
     const pushed = new FixtureGitHub(repositories.map(repo => ({
@@ -282,6 +340,8 @@ describe('plugin marketplace scanner', () => {
     })
     expect(catalog.entries.find(entry => entry.repository.fullName.endsWith('/valid'))?.validation.code)
       .toBe('valid-bundle')
+    // Same pin: the earlier existence proof is reused without another tree read.
+    expect(pushed.treeCalls).toEqual([])
   })
 
   it('does not overwrite last-known-good output when search is incomplete', async () => {
@@ -320,6 +380,7 @@ describe('plugin marketplace scanner', () => {
         }
       },
       async getContent() { throw new Error('not reached') },
+      async getTreePaths() { throw new Error('not reached') },
       async getRepositoryById() { return null },
       async resolveDefaultBranchCommits() { return {} },
     }
@@ -346,6 +407,7 @@ describe('plugin marketplace scanner', () => {
         }
       },
       async getContent() { throw new Error('not reached') },
+      async getTreePaths() { throw new Error('not reached') },
       async getRepositoryById() { return null },
       async resolveDefaultBranchCommits() { return {} },
     }
@@ -397,6 +459,7 @@ describe('plugin marketplace scanner', () => {
     })
     expect(second.contentCalls.filter(call => call.includes('/valid/')))
       .toEqual(['fixture/valid/package.json', 'fixture/valid/cordis.patch.yml'])
+    expect(second.treeCalls).toEqual(['fixture/valid'])
   })
 
   it('carries forward a repository search missed, and revalidates it after a push', async () => {
@@ -458,5 +521,67 @@ describe('plugin marketplace scanner', () => {
     expect(catalog.entries.map(entry => entry.repositoryId)).toEqual(['3'])
     const state = JSON.parse(await readFile(files.statePath, 'utf8')) as { repositories: Record<string, unknown> }
     expect(Object.keys(state.repositories)).toEqual(['3'])
+  })
+
+  it('validates double-tagged pack repositories as packs, never as bundles', async () => {
+    const files = await paths()
+    const github = new FixtureGitHub([
+      repository(1, 'valid'),
+      packRepository(20, 'good-pack'),
+      packRepository(21, 'pack-no-manifest'),
+      packRepository(22, 'pack-invalid'),
+      packRepository(23, 'pack-empty'),
+    ])
+    const catalog = await runMarketplaceScan({
+      client: github,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    expect(catalog.summary).toEqual({ entryCount: 1, invalidEntryCount: 0, packCount: 1 })
+    const pack = catalog.packs.find(candidate => candidate.repositoryId === '20')
+    expect(pack).toMatchObject({
+      name: 'Fixture Pack',
+      validation: { status: 'valid', code: 'valid-pack' },
+    })
+    // Items resolve to stable repository ids against this run's stream; a
+    // repository the scan never saw stays honestly unresolved.
+    expect(pack?.items).toEqual([
+      { fullName: 'fixture/valid', repositoryId: '1' },
+      { fullName: 'fixture/not-scanned', repositoryId: null },
+    ])
+    // The pack branch never bundle-validates: no package.json or patch reads.
+    expect(github.contentCalls.filter(call => call.includes('good-pack')))
+      .toEqual(['fixture/good-pack/dsh.pack.json'])
+    const rejected = JSON.parse(await readFile(files.rejectedPath, 'utf8'))
+    expect(rejected.summary).toEqual({ entryCount: 0, invalidEntryCount: 0, packCount: 3 })
+    const rejectedCodes = new Map(rejected.packs.map((entry: { repositoryId: string; validation: { code: string } }) => [entry.repositoryId, entry.validation.code]))
+    expect(rejectedCodes.get('21')).toBe('pack-manifest-missing')
+    expect(rejectedCodes.get('22')).toBe('pack-manifest-invalid')
+    expect(rejectedCodes.get('23')).toBe('pack-manifest-invalid')
+  })
+
+  it('revalidates a repository whose kind flips between plugin and pack', async () => {
+    const files = await paths()
+    const asPlugin = repository(1, 'shapeshifter')
+    await runMarketplaceScan({
+      client: new FixtureGitHub([asPlugin]),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    const asPack = packRepository(1, 'shapeshifter')
+    const second = new FixtureGitHub([asPack])
+    const catalog = await runMarketplaceScan({
+      client: second,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    expect(catalog.summary).toEqual({ entryCount: 0, invalidEntryCount: 0, packCount: 1 })
+    expect(catalog.entries).toEqual([])
+    expect(catalog.packs[0]?.repositoryId).toBe('1')
+    expect(second.contentCalls.filter(call => call.includes('shapeshifter')))
+      .toEqual(['fixture/shapeshifter/dsh.pack.json'])
   })
 })

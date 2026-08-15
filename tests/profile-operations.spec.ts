@@ -109,6 +109,129 @@ describe('MarketplaceProfileOperations', () => {
     expect((await readManifest(runtime.dir)).dsh.profile.bundles).toEqual(['@example/dsh-weather-bundle'])
   })
 
+  it('runs reviewed lifecycle scripts only after explicit consent, pinned to the exact spec', async () => {
+    const runtime = await stageProfile()
+    const scripted = catalogFixture({
+      entries: [{
+        ...catalogFixture().entries[0]!,
+        installability: 'manual',
+        installScripts: { prepare: 'node build.js' },
+      }],
+    })
+    const entry = scripted.entries[0]!
+    const calls: string[][] = []
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => scripted,
+      capabilities,
+      runPnpm: async (args) => {
+        calls.push([...args])
+        const manifest = await readManifest(runtime.dir)
+        manifest.dependencies[entry.package.name!] = entry.source.ref
+        await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
+        await stageInstalledPackage(runtime.dir, scripted)
+        return { exitCode: 0, unavailable: false }
+      },
+    })
+
+    const plan = operations.plan({ repositoryId: '123456', action: 'install' })
+    expect(plan).toMatchObject({
+      status: 'ready',
+      requiresScripts: true,
+      installScripts: { prepare: 'node build.js' },
+    })
+    expect(plan.warnings).toContain('install-scripts-run')
+    expect(plan.warnings).not.toContain('install-scripts-disabled')
+
+    // The reviewed plan alone is not consent: execute refuses without it.
+    await expect(operations.execute({ planId: plan.planId! })).resolves.toMatchObject({
+      status: 'failed', code: 'consent-required',
+    })
+    expect(calls).toEqual([])
+
+    const replay = operations.plan({ repositoryId: '123456', action: 'install' })
+    const result = await operations.execute({ planId: replay.planId!, allowScripts: true })
+    expect(result).toMatchObject({ status: 'succeeded', code: 'succeeded' })
+    // Scripts run without --ignore-scripts, gated by an exact name@spec grant.
+    expect(calls).toEqual([['add', '--save-exact', entry.source.ref]])
+    const workspace = await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')
+    expect(workspace).toContain('allowBuilds:')
+    expect(workspace).toContain(`'@example/dsh-weather-bundle@${entry.source.ref}': true`)
+    // Provenance records that this install ran scripts.
+    const records = JSON.parse(
+      await readFile(join(runtime.dir, 'dsh-plugin-marketplace.installs.json'), 'utf8'),
+    ) as { installs: Record<string, { scripts?: boolean }> }
+    expect(records.installs['@example/dsh-weather-bundle']?.scripts).toBe(true)
+  })
+
+  it('revokes the script grant when the package leaves the profile, keeping other grants', async () => {
+    const catalog = catalogFixture()
+    const entry = catalog.entries[0]!
+    const runtime = await stageActiveProfile(catalog)
+    await writeFile(join(runtime.dir, 'pnpm-workspace.yaml'), [
+      'packages: []',
+      'nodeLinker: hoisted',
+      '',
+      'allowBuilds:',
+      `  '@example/dsh-weather-bundle@${entry.source.ref}': true`,
+      "  '@other/tool@1.0.0': true",
+      '',
+    ].join('\n'))
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => catalog,
+      capabilities,
+      runPnpm: async (args) => {
+        if (args[0] === 'remove') {
+          const manifest = await readManifest(runtime.dir)
+          delete manifest.dependencies[entry.package.name!]
+          await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
+        }
+        return { exitCode: 0, unavailable: false }
+      },
+    })
+
+    const remove = operations.plan({ repositoryId: '123456', action: 'remove' })
+    expect(remove).toMatchObject({ status: 'ready', action: 'remove' })
+    await expect(operations.execute({ planId: remove.planId! })).resolves.toMatchObject({
+      status: 'succeeded', action: 'remove',
+    })
+    const workspace = await readFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'utf8')
+    expect(workspace).not.toContain('@example/dsh-weather-bundle@')
+    expect(workspace).toContain("'@other/tool@1.0.0': true")
+    expect(workspace).toContain('allowBuilds:')
+  })
+
+  it('refuses to run scripts when the consent grant cannot be written', async () => {
+    const runtime = await stageProfile()
+    // An inline allowBuilds layout is unsupported: the grant write must fail
+    // before pnpm runs anything, not install a package whose build never ran.
+    await writeFile(join(runtime.dir, 'pnpm-workspace.yaml'), 'packages: []\nallowBuilds: {}\n')
+    const scripted = catalogFixture({
+      entries: [{
+        ...catalogFixture().entries[0]!,
+        installability: 'manual',
+        installScripts: { prepare: 'node build.js' },
+      }],
+    })
+    const calls: string[][] = []
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => scripted,
+      capabilities,
+      runPnpm: async (args) => {
+        calls.push([...args])
+        return { exitCode: 0, unavailable: false }
+      },
+    })
+    const plan = operations.plan({ repositoryId: '123456', action: 'install' })
+    await expect(operations.execute({ planId: plan.planId!, allowScripts: true })).resolves.toMatchObject({
+      status: 'failed', code: 'profile-write-failed', rollback: 'succeeded',
+    })
+    // The only pnpm invocation is the rollback repair; the install never ran.
+    expect(calls).toEqual([['install', '--ignore-scripts']])
+  })
+
   it('restores the profile and repairs dependencies when pnpm fails', async () => {
     const runtime = await stageProfile()
     const catalog = catalogFixture()
@@ -323,7 +446,7 @@ describe('MarketplaceProfileOperations', () => {
       repository: { ...base.repository, fullName: 'copy/dsh-weather-bundle' },
       source: { ...base.source, ref: 'git+https://github.com/copy/dsh-weather-bundle.git#ffffffffffffffffffffffffffffffffffffffff' },
     }
-    const catalog = catalogFixture({ entries: [...catalogFixture().entries, duplicate], summary: { entryCount: 2, invalidEntryCount: 0 } })
+    const catalog = catalogFixture({ entries: [...catalogFixture().entries, duplicate], summary: { entryCount: 2, invalidEntryCount: 0, packCount: 0 } })
     const operations = new MarketplaceProfileOperations({
       runtime,
       catalog: () => catalog,
@@ -393,7 +516,7 @@ describe('MarketplaceProfileOperations', () => {
     }
     const catalog = catalogFixture({
       entries: [base, foreign],
-      summary: { entryCount: 2, invalidEntryCount: 0 },
+      summary: { entryCount: 2, invalidEntryCount: 0, packCount: 0 },
     })
     const operations = new MarketplaceProfileOperations({
       runtime,
