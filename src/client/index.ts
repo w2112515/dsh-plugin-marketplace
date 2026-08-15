@@ -84,6 +84,7 @@ export function apply(ctx: Context): void {
     plan: request => planMarketplaceOperation(remote, request),
     execute: (planId, allowScripts) => executeMarketplaceOperation(remote, planId, allowScripts),
     activateTab: activateSettingsPluginTab,
+    dateLocale: () => ctx.locale.getLocale().active,
   })
   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
     name: 'settings.plugins.tab',

@@ -122,6 +122,7 @@ function renderTab(overrides: Partial<PluginMarketplaceSettingsTabProps> = {}) {
     plan: vi.fn(async () => ({ status: 'ready' as const, planId: 'plan-1' as never, blockCode: null, action: 'install' as const, profileName: 'web', repositoryId: 'plugin-1', packageName: '@example/weather-bundle', packageVersion: '1.0.0', sourceRef: detail.sourceRef, commitSha: 'abc', warnings: ['restart-required'] as const, requiresScripts: false, installScripts: null, expiresAt: null })),
     execute: vi.fn(async () => ({ status: 'succeeded' as const, code: 'succeeded' as const, action: 'install' as const, profileName: 'web', packageName: '@example/weather-bundle', requiresRestart: true, rollback: 'not-needed' as const, detail: null, snapshot: operationSnapshot })),
     activateTab: vi.fn(),
+    dateLocale: () => 'en',
     t: translate as PluginMarketplaceSettingsTabProps['t'],
     ...overrides,
   } as unknown as PluginMarketplaceSettingsTabProps
@@ -247,6 +248,12 @@ describe('PluginMarketplaceSettingsTab', () => {
     // 73% = three full cells, one at 65%, one empty — never stepwise.
     const fills = [...meter.querySelectorAll('span[style]')].map(node => (node as HTMLElement).style.width)
     expect(fills).toEqual(['100%', '100%', '100%', '65%', '0%'])
+  })
+
+  it('formats dates in the injected UI locale rather than the browser locale', async () => {
+    renderTab({ dateLocale: () => 'zh' })
+    const pushed = await screen.findAllByText('Updated 2026年8月13日')
+    expect(pushed.length).toBeGreaterThan(0)
   })
 
   it('shows the community verdict chip only at ten or more votes', async () => {
