@@ -21,4 +21,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
+      # lib/ is tracked and is exactly what git-pinned installs execute; a
+      # src-only commit ships stale code. `check` rebuilt it just now, so any
+      # remaining diff means the committed build output lagged the sources.
+      - name: Fail when the tracked build output is stale
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain -- lib/)" ]; then
+            echo "::error::lib/ is stale — run 'pnpm run build' and commit the output together with the src changes."
+            git status --porcelain -- lib/
+            exit 1
+          fi
       - run: pnpm pack --dry-run

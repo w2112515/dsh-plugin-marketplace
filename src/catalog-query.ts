@@ -244,7 +244,10 @@ export function installedMarketplacePlugins(
     profileName: snapshot.profileName,
     busy: snapshot.busy,
     capabilities: snapshot.capabilities,
-    items: snapshot.plugins.map(state => ({ state, plugin: summaries.get(state.repositoryId) ?? null })),
+    items: snapshot.plugins.map(state => ({
+      state,
+      plugin: state.repositoryId === null ? null : summaries.get(state.repositoryId) ?? null,
+    })),
     external: snapshot.external,
   }
 }

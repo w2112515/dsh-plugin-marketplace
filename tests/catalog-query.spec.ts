@@ -95,7 +95,9 @@ describe('catalog query', () => {
       state: 'active' as const,
       installedVersion: '1.0.0',
       installedSpec: admitted.source.ref,
+      installedRepository: 'acme/dsh-plugin',
       catalogSpec: admitted.source.ref,
+      catalogRelation: 'up-to-date' as const,
       updateAvailable: false,
     }]
     expect(detailMarketplaceEntry(view([admitted, rejected]), '1', states)).toMatchObject({
@@ -139,19 +141,30 @@ describe('catalog query', () => {
       plugins: [
         {
           repositoryId: '1', packageName: admitted.package.name, state: 'active',
-          installedVersion: '1.0.0', installedSpec: admitted.source.ref, catalogSpec: admitted.source.ref, updateAvailable: false,
+          installedVersion: '1.0.0', installedSpec: admitted.source.ref, installedRepository: 'acme/dsh-plugin',
+          catalogSpec: admitted.source.ref, catalogRelation: 'up-to-date', updateAvailable: false,
         },
         {
           repositoryId: '2', packageName: rejected.package.name, state: 'pending-removal',
-          installedVersion: '1.0.0', installedSpec: rejected.source.ref, catalogSpec: rejected.source.ref, updateAvailable: false,
+          installedVersion: '1.0.0', installedSpec: rejected.source.ref, installedRepository: 'acme/dsh-plugin',
+          catalogSpec: rejected.source.ref, catalogRelation: 'up-to-date', updateAvailable: false,
+        },
+        {
+          repositoryId: null, packageName: 'dsh-off-catalog', state: 'active' as const,
+          installedVersion: '0.1.0', installedSpec: 'github:elsewhere/dsh-off-catalog#0123456789012345678901234567890123456789',
+          installedRepository: 'elsewhere/dsh-off-catalog',
+          catalogSpec: null, catalogRelation: 'not-in-catalog' as const, updateAvailable: false,
         },
       ],
       external: [{ packageName: '@elsewhere/tool', installedSpec: '1.2.3', activeAtLaunch: true, activeAfterRestart: true }],
     }
     const result = installedMarketplacePlugins(view([admitted, rejected]), snapshot)
-    expect(result.items).toHaveLength(2)
+    expect(result.items).toHaveLength(3)
     expect(result.items[0]?.plugin?.category).toBe('theme')
     expect(result.items[1]?.plugin).toBeNull()
+    // A null repositoryId never borrows a same-name summary from the catalog.
+    expect(result.items[2]?.plugin).toBeNull()
+    expect(result.items[2]?.state.catalogRelation).toBe('not-in-catalog')
     expect(result.external[0]?.packageName).toBe('@elsewhere/tool')
   })
 })

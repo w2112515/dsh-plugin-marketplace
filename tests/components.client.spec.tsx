@@ -31,7 +31,9 @@ const activeState = {
   state: 'active' as const,
   installedVersion: '1.0.0',
   installedSpec: 'git+https://example.test/weather.git#abc',
+  installedRepository: 'example/weather-bundle',
   catalogSpec: 'git+https://example.test/weather.git#abc',
+  catalogRelation: 'up-to-date' as const,
   updateAvailable: false,
 }
 
@@ -166,6 +168,37 @@ describe('PluginMarketplaceSettingsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove plugin' }))
     await screen.findByText('Review profile change')
     expect(props.plan).toHaveBeenCalledWith({ repositoryId: 'plugin-1', action: 'remove' })
+  })
+
+  it('shows spec-derived identity without management actions for off-catalog and diverged installs', async () => {
+    const offCatalog = {
+      repositoryId: null, packageName: 'dsh-plugin-marketplace', state: 'active' as const,
+      installedVersion: '0.2.0', installedSpec: 'github:w2112515/dsh-plugin-marketplace#d739a886ae0608ce5cd6b4398ef16313fe21776d',
+      installedRepository: 'w2112515/dsh-plugin-marketplace',
+      catalogSpec: null, catalogRelation: 'not-in-catalog' as const, updateAvailable: false,
+    }
+    const diverged = {
+      ...activeState, catalogSpec: 'git+https://example.test/weather.git#def',
+      catalogRelation: 'diverged' as const,
+    }
+    renderTab({
+      installed: vi.fn(async () => installedModel([
+        { state: offCatalog, plugin: null },
+        { state: diverged, plugin: summaryPlugin },
+      ])),
+    })
+
+    await screen.findByText('Weather Bundle')
+    fireEvent.click(screen.getByRole('button', { name: /^Installed/ }))
+    // Off-catalog row: identity comes from the installed spec, never from a
+    // same-name catalog entry, and no update/remove funnel is offered.
+    await screen.findByText('Not in catalog')
+    expect(screen.getByText('w2112515/dsh-plugin-marketplace')).toBeTruthy()
+    expect(screen.getByText(/Publisher: w2112515/)).toBeTruthy()
+    // Diverged row: neutral chip, no update funnel, but removal stays available.
+    expect(screen.getByText('Differs from catalog')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Update plugin' })).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Remove plugin' })).toHaveLength(1)
   })
 
   it('keeps a cached catalog visible when its background refresh fails', async () => {

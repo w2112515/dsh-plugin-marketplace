@@ -42,14 +42,33 @@ class FixtureGitHub implements MarketplaceGitHubReader {
   readonly contentCalls: string[] = []
   incomplete = false
   notModified = false
+  /** Ids GitHub Search fails to return this run, simulating paging drift. */
+  readonly omittedFromSearch = new Set<string>()
+  readonly deletedIds = new Set<string>()
+  readonly failingIds = new Set<string>()
+  readonly topicWithdrawnIds = new Set<string>()
+  readonly pushedAtOverrides = new Map<string, string>()
 
   constructor(readonly repositories: readonly GitHubRepository[]) {}
 
   async searchRepositories(_topic: string, _window: GitHubSearchWindow, page: number): Promise<GitHubSearchPage> {
+    const visible = this.repositories.filter(item => !this.omittedFromSearch.has(item.id))
     return {
-      totalCount: this.repositories.length,
+      totalCount: visible.length,
       incomplete: this.incomplete,
-      repositories: page === 1 ? this.repositories : [],
+      repositories: page === 1 ? visible : [],
+    }
+  }
+
+  async getRepositoryById(id: string): Promise<GitHubRepository | null> {
+    if (this.failingIds.has(id)) throw new Error('temporary GitHub failure')
+    if (this.deletedIds.has(id)) return null
+    const found = this.repositories.find(item => item.id === id)
+    if (found === undefined) return null
+    return {
+      ...found,
+      topics: this.topicWithdrawnIds.has(id) ? [] : found.topics,
+      pushedAt: this.pushedAtOverrides.get(id) ?? found.pushedAt,
     }
   }
 
@@ -294,6 +313,7 @@ describe('plugin marketplace scanner', () => {
         }
       },
       async getContent() { throw new Error('not reached') },
+      async getRepositoryById() { return null },
       async resolveDefaultBranchCommits() { return {} },
     }
     const catalog = await runMarketplaceScan({
@@ -319,6 +339,7 @@ describe('plugin marketplace scanner', () => {
         }
       },
       async getContent() { throw new Error('not reached') },
+      async getRepositoryById() { return null },
       async resolveDefaultBranchCommits() { return {} },
     }
     const catalog = await runMarketplaceScan({
@@ -329,5 +350,66 @@ describe('plugin marketplace scanner', () => {
     })
     expect(catalog.summary.entryCount).toBe(0)
     expect(windows).toHaveLength(3)
+  })
+
+  it('carries forward a repository search missed, and revalidates it after a push', async () => {
+    const files = await paths()
+    const repositories = [repository(1, 'stable'), repository(2, 'drifting')]
+    await runMarketplaceScan({
+      client: new FixtureGitHub(repositories),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    const second = new FixtureGitHub(repositories)
+    second.omittedFromSearch.add('2')
+    const catalog = await runMarketplaceScan({
+      client: second,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    const carriedEntry = catalog.entries.find(entry => entry.repositoryId === '2')
+    expect(carriedEntry?.repository.fullName).toBe('fixture/drifting')
+    expect(carriedEntry?.firstSeenAt).toBe('2026-08-15T00:00:00.000Z')
+    expect(second.contentCalls.some(call => call.includes('/drifting/'))).toBe(false)
+
+    const third = new FixtureGitHub(repositories)
+    third.omittedFromSearch.add('2')
+    third.pushedAtOverrides.set('2', '2026-08-15T02:00:00.000Z')
+    const republished = await runMarketplaceScan({
+      client: third,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T02:00:00.000Z'),
+    })
+    expect(republished.entries.find(entry => entry.repositoryId === '2')?.lastCodePushAt)
+      .toBe('2026-08-15T02:00:00.000Z')
+    expect(third.contentCalls.some(call => call.includes('/drifting/'))).toBe(true)
+  })
+
+  it('evicts a missed repository only on proof of deletion or topic withdrawal', async () => {
+    const files = await paths()
+    const repositories = [repository(1, 'deleted'), repository(2, 'withdrawn'), repository(3, 'unreachable')]
+    await runMarketplaceScan({
+      client: new FixtureGitHub(repositories),
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T00:00:00.000Z'),
+    })
+    const second = new FixtureGitHub(repositories)
+    for (const id of ['1', '2', '3']) second.omittedFromSearch.add(id)
+    second.deletedIds.add('1')
+    second.topicWithdrawnIds.add('2')
+    second.failingIds.add('3')
+    const catalog = await runMarketplaceScan({
+      client: second,
+      topic: DEFAULT_MARKETPLACE_TOPIC,
+      ...files,
+      now: () => new Date('2026-08-15T01:00:00.000Z'),
+    })
+    expect(catalog.entries.map(entry => entry.repositoryId)).toEqual(['3'])
+    const state = JSON.parse(await readFile(files.statePath, 'utf8')) as { repositories: Record<string, unknown> }
+    expect(Object.keys(state.repositories)).toEqual(['3'])
   })
 })

@@ -33,6 +33,7 @@ const SEARCH_EPOCH = '1970-01-01T00:00:00.000Z'
 /** Narrow seam used by deterministic scanner tests. */
 export interface MarketplaceGitHubReader {
   searchRepositories(topic: string, window: GitHubSearchWindow, page: number): Promise<GitHubSearchPage>
+  getRepositoryById(id: string): Promise<GitHubRepository | null>
   getContent(fullName: string, path: string, ref: string, etag: string | null): Promise<GitHubContentResult>
   resolveDefaultBranchCommits(repositories: readonly GitHubRepository[]): Promise<Readonly<Record<string, string>>>
 }
@@ -717,15 +718,62 @@ function failedRepositoryState(
   }
 }
 
-/** Discover, incrementally validate, and atomically publish one complete snapshot. */
+type MissedOutcome =
+  | { readonly kind: 'carried'; readonly repository: GitHubRepository }
+  | { readonly kind: 'retained'; readonly state: RepositoryScanState }
+  | { readonly kind: 'evicted' }
+
+/**
+ * Search is a discovery hint, not an authority: a repository GitHub Search
+ * fails to return in one run must not silently vanish from the catalog.
+ * Verify each missed repository by its stable id and evict only on proof —
+ * deleted or made private (null), or the marketplace topic withdrawn. Live
+ * repositories rejoin the normal validation pipeline, so a changed pushedAt
+ * still revalidates and re-pins them. When verification itself fails, keep
+ * the last-known-good state rather than punish the repository for our outage.
+ */
+async function recoverMissedRepositories(
+  client: MarketplaceGitHubReader,
+  topic: string,
+  previous: MarketplaceScannerState,
+  discovered: readonly GitHubRepository[],
+): Promise<{ carried: GitHubRepository[]; retained: RepositoryScanState[] }> {
+  const discoveredIds = new Set(discovered.map(repository => repository.id))
+  const missed = Object.values(previous.repositories)
+    .filter(state => !discoveredIds.has(state.entry.repositoryId))
+  const carried: GitHubRepository[] = []
+  const retained: RepositoryScanState[] = []
+  for (let offset = 0; offset < missed.length; offset += VALIDATION_CONCURRENCY) {
+    const batch = missed.slice(offset, offset + VALIDATION_CONCURRENCY)
+    const outcomes = await Promise.all(batch.map(async (state): Promise<MissedOutcome> => {
+      try {
+        const repository = await client.getRepositoryById(state.entry.repositoryId)
+        if (repository !== null && repository.topics.includes(topic)) return { kind: 'carried', repository }
+        return { kind: 'evicted' }
+      } catch {
+        return { kind: 'retained', state }
+      }
+    }))
+    for (const outcome of outcomes) {
+      if (outcome.kind === 'carried') carried.push(outcome.repository)
+      else if (outcome.kind === 'retained') retained.push(outcome.state)
+    }
+  }
+  return { carried, retained }
+}
+
+/** Discover, incrementally validate, retain missed known repositories, and atomically publish one complete snapshot. */
 export async function runMarketplaceScan(options: ScanOptions): Promise<MarketplaceCatalogSnapshot> {
   const now = options.now?.() ?? new Date()
   const generatedAt = now.toISOString()
   const scanEnd = new Date(now.getTime() + 1).toISOString()
   const previous = await readState(options.statePath, options.topic)
   const discovered = await discoverRepositories(options.client, options.topic, previous.searchWindows, scanEnd)
+  const recovered = await recoverMissedRepositories(options.client, options.topic, previous, discovered.repositories)
+  const candidates = [...discovered.repositories, ...recovered.carried]
   const repositories: Record<string, RepositoryScanState> = {}
-  const validation = discovered.repositories.filter((repository) => {
+  for (const state of recovered.retained) repositories[state.entry.repositoryId] = state
+  const validation = candidates.filter((repository) => {
     const old = previous.repositories[repository.id]
     return !repository.archived && (old === undefined
       || old.pushedAt !== repository.pushedAt
@@ -740,8 +788,8 @@ export async function runMarketplaceScan(options: ScanOptions): Promise<Marketpl
     // Content validation can still produce an active, browseable entry when the
     // best-effort immutable-ref lookup is temporarily unavailable.
   }
-  for (let offset = 0; offset < discovered.repositories.length; offset += VALIDATION_CONCURRENCY) {
-    const batch = discovered.repositories.slice(offset, offset + VALIDATION_CONCURRENCY)
+  for (let offset = 0; offset < candidates.length; offset += VALIDATION_CONCURRENCY) {
+    const batch = candidates.slice(offset, offset + VALIDATION_CONCURRENCY)
     const results = await Promise.all(batch.map(async (repository) => {
       const old = previous.repositories[repository.id]
       const mustValidate = old === undefined

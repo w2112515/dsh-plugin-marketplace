@@ -352,6 +352,16 @@
   line-height: 18px;
 }
 
+.relationChip {
+  flex: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .rowOpen:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }

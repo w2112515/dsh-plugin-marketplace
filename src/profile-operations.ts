@@ -15,6 +15,7 @@ import { isPublicMarketplaceEntry } from './catalog-query.ts'
 import { execa } from 'execa'
 import type {
   MarketplaceCatalogEntry,
+  MarketplaceCatalogRelation,
   MarketplaceCatalogSnapshot,
   MarketplaceExecuteRequest,
   MarketplaceOperationPlan,
@@ -201,10 +202,37 @@ function manifestBundles(manifest: ProfileManifest): readonly string[] {
   return manifest.dsh?.profile?.bundles ?? []
 }
 
+interface CoreProfileState {
+  readonly state: MarketplaceProfilePluginState['state']
+  readonly installedSpec: string | null
+}
+
+/** Entry-independent lifecycle: what the profile manifest and launch snapshot prove. */
+function coreProfileState(
+  runtime: MarketplaceProfileRuntime,
+  manifest: ProfileManifest,
+  packageName: string,
+): CoreProfileState {
+  const installedSpec = manifest.dependencies?.[packageName] ?? null
+  const launchSpec = runtime.dependenciesAtLaunch[packageName]
+  const activeAtLaunch = runtime.bundlesAtLaunch.includes(packageName)
+  const activeAfterRestart = manifestBundles(manifest).includes(packageName)
+  let state: CoreProfileState['state']
+  if (installedSpec === null) state = activeAtLaunch ? 'pending-removal' : 'not-installed'
+  else if (!activeAfterRestart && activeAtLaunch) state = 'pending-removal'
+  else if (!activeAfterRestart) state = 'installed-inactive'
+  else if (!activeAtLaunch || launchSpec === undefined) state = 'pending-install'
+  else if (launchSpec !== installedSpec) state = 'pending-update'
+  else state = 'active'
+  return { state, installedSpec }
+}
+
+/** Project one catalog entry against the profile; identity comes from the entry by construction. */
 function pluginState(
   runtime: MarketplaceProfileRuntime,
   manifest: ProfileManifest,
   entry: MarketplaceCatalogEntry,
+  records: Readonly<Record<string, InstallRecord>> = {},
 ): MarketplaceProfilePluginState {
   const packageName = entry.package.name
   if (packageName === null) {
@@ -214,29 +242,30 @@ function pluginState(
       state: 'not-installed',
       installedVersion: null,
       installedSpec: null,
+      installedRepository: null,
       catalogSpec: entry.source.ref,
+      catalogRelation: 'up-to-date',
       updateAvailable: false,
     }
   }
-  const installedSpec = manifest.dependencies?.[packageName] ?? null
-  const launchSpec = runtime.dependenciesAtLaunch[packageName]
-  const activeAtLaunch = runtime.bundlesAtLaunch.includes(packageName)
-  const activeAfterRestart = manifestBundles(manifest).includes(packageName)
-  let state: MarketplaceProfilePluginState['state']
-  if (installedSpec === null) state = activeAtLaunch ? 'pending-removal' : 'not-installed'
-  else if (!activeAfterRestart && activeAtLaunch) state = 'pending-removal'
-  else if (!activeAfterRestart) state = 'installed-inactive'
-  else if (!activeAtLaunch || launchSpec === undefined) state = 'pending-install'
-  else if (launchSpec !== installedSpec) state = 'pending-update'
-  else state = 'active'
+  const core = coreProfileState(runtime, manifest, packageName)
+  const origin = installedOrigin(core.installedSpec)
+  const sameOrigin = origin !== null && sameRepository(origin, entry)
+  // Only an origin-matched entry may relate pins; a foreign same-name entry
+  // must never compute an "update" against someone else's repository.
+  const relation = sameOrigin
+    ? catalogRelationFor(core.installedSpec, entry, records[packageName])
+    : core.installedSpec === null ? 'up-to-date' : 'diverged'
   return {
     repositoryId: entry.repositoryId,
     packageName,
-    state,
-    installedVersion: installedSpec === null ? null : installedVersion(runtime.dir, packageName),
-    installedSpec,
+    state: core.state,
+    installedVersion: core.installedSpec === null ? null : installedVersion(runtime.dir, packageName),
+    installedSpec: core.installedSpec,
+    installedRepository: installedOrigin(core.installedSpec ?? runtime.dependenciesAtLaunch[packageName] ?? null)?.fullName ?? null,
     catalogSpec: entry.source.ref,
-    updateAvailable: installedSpec !== null && installedSpec !== entry.source.ref,
+    catalogRelation: relation,
+    updateAvailable: relation === 'update-available',
   }
 }
 
@@ -278,7 +307,61 @@ function installedOrigin(spec: string | null): InstalledOrigin | null {
     ?? /^git\+https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?:#([0-9a-f]{40}))?$/i.exec(spec)
   const fullName = match?.[1]
   if (fullName === undefined) return null
-  return { fullName: fullName.toLowerCase(), commitSha: match?.[2]?.toLowerCase() ?? null }
+  return { fullName, commitSha: match?.[2]?.toLowerCase() ?? null }
+}
+
+function sameRepository(origin: InstalledOrigin, entry: MarketplaceCatalogEntry): boolean {
+  return origin.fullName.toLowerCase() === entry.repository.fullName.toLowerCase()
+}
+
+/** Adversarial review provenance for pins the Marketplace itself installed. */
+interface InstallRecord {
+  readonly spec: string
+  readonly commitSha: string | null
+  readonly installedAt: string
+}
+
+const INSTALL_STATE_FILE = 'dsh-plugin-marketplace.installs.json'
+
+/** Read pins this Marketplace installed, best-effort; anything unreadable degrades to no provenance. */
+function readInstallRecords(profileDir: string): Readonly<Record<string, InstallRecord>> {
+  try {
+    const value: unknown = JSON.parse(requireText(join(profileDir, INSTALL_STATE_FILE)))
+    if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.installs)) return {}
+    return Object.fromEntries(Object.entries(value.installs).flatMap(([name, record]) => {
+      if (!isRecord(record) || typeof record.spec !== 'string') return []
+      return [[name, {
+        spec: record.spec,
+        commitSha: typeof record.commitSha === 'string' ? record.commitSha.toLowerCase() : null,
+        installedAt: typeof record.installedAt === 'string' ? record.installedAt : '',
+      } satisfies InstallRecord]]
+    }))
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Relate the installed pin to the origin-matched catalog entry. An update is
+ * claimed only when the Marketplace itself placed the current pin and the
+ * catalog has moved since; scanner pins advance along the default branch, so
+ * a moved catalog pin is newer. Anything else that differs is honestly
+ * 'diverged' — never an update offer, and never a silent downgrade funnel.
+ */
+function catalogRelationFor(
+  installedSpec: string | null,
+  entry: MarketplaceCatalogEntry,
+  record: InstallRecord | undefined,
+): MarketplaceCatalogRelation {
+  if (installedSpec === null) return 'up-to-date'
+  const installedSha = installedOrigin(installedSpec)?.commitSha ?? null
+  const catalogSha = entry.repository.commitSha?.toLowerCase() ?? null
+  const samePin = installedSha !== null && catalogSha !== null
+    ? installedSha === catalogSha
+    : installedSpec === entry.source.ref
+  if (samePin) return 'up-to-date'
+  if (record !== undefined && installedSha !== null && record.commitSha === installedSha) return 'update-available'
+  return 'diverged'
 }
 
 function marketplacePlanId(value: string): MarketplacePlanId {
@@ -334,27 +417,55 @@ export class MarketplaceProfileOperations {
         activeAtLaunch: this.options.runtime.bundlesAtLaunch.includes(name),
         activeAfterRestart: manifestBundles(manifest).includes(name),
       }))
-    // A profile holds one spec per package name, so same-name catalog duplicates
-    // collapse into one row. The entry matching the installed origin wins —
-    // origin+commit beats origin alone beats alphabetical first — so the row
-    // never borrows another publisher's identity for your installation.
-    const byPackage = new Map<string, { state: MarketplaceProfilePluginState; rank: 0 | 1 | 2 }>()
+    // Rows are built from profile truth, never from catalog identity: a
+    // package is identified by its installed (or at-launch) spec, and a
+    // catalog entry is attached only when its repository matches that spec's
+    // origin. Without an origin match there is no catalog identity to show —
+    // the row must not borrow a same-name stranger's publisher, and it must
+    // never offer that stranger's code as an "update".
+    const records = readInstallRecords(this.options.runtime.dir)
+    const entriesByName = new Map<string, MarketplaceCatalogEntry[]>()
     for (const entry of catalog?.entries ?? []) {
-      const state = pluginState(this.options.runtime, manifest, entry)
-      if (state.state === 'not-installed') continue
-      const key = state.packageName ?? state.repositoryId
-      const origin = installedOrigin(state.installedSpec)
-      const rank: 0 | 1 | 2 = origin !== null && origin.fullName === entry.repository.fullName.toLowerCase()
-        ? (origin.commitSha !== null && origin.commitSha === entry.repository.commitSha ? 2 : 1)
-        : 0
-      const existing = byPackage.get(key)
-      if (existing === undefined || rank > existing.rank) byPackage.set(key, { state, rank })
+      if (entry.package.name === null) continue
+      const list = entriesByName.get(entry.package.name)
+      if (list === undefined) entriesByName.set(entry.package.name, [entry])
+      else list.push(entry)
+    }
+    const packageNames = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...manifestBundles(manifest),
+      ...Object.keys(this.options.runtime.dependenciesAtLaunch),
+      ...this.options.runtime.bundlesAtLaunch,
+    ])
+    const plugins: MarketplaceProfilePluginState[] = []
+    for (const packageName of [...packageNames].sort((left, right) => left.localeCompare(right))) {
+      const candidates = entriesByName.get(packageName)
+      if (candidates === undefined) continue // external territory, reported above
+      const core = coreProfileState(this.options.runtime, manifest, packageName)
+      if (core.state === 'not-installed') continue
+      const origin = installedOrigin(core.installedSpec ?? this.options.runtime.dependenciesAtLaunch[packageName] ?? null)
+      const match = origin === null ? undefined : candidates.find(entry => sameRepository(origin, entry))
+      if (match === undefined) {
+        plugins.push({
+          repositoryId: null,
+          packageName,
+          state: core.state,
+          installedVersion: core.installedSpec === null ? null : installedVersion(this.options.runtime.dir, packageName),
+          installedSpec: core.installedSpec,
+          installedRepository: origin?.fullName ?? null,
+          catalogSpec: null,
+          catalogRelation: 'not-in-catalog',
+          updateAvailable: false,
+        })
+        continue
+      }
+      plugins.push(pluginState(this.options.runtime, manifest, match, records))
     }
     return {
       profileName: this.options.runtime.profileName,
       busy: this.busy,
       capabilities: this.options.capabilities,
-      plugins: [...byPackage.values()].map(item => item.state),
+      plugins,
       external,
     }
   }
@@ -379,10 +490,12 @@ export class MarketplaceProfileOperations {
       return emptyPlan(request, this.options.runtime.profileName, 'profile-not-writable', entry)
     }
     const manifest = readProfileManifest('dsh marketplace', this.options.runtime.dir)
-    const state = pluginState(this.options.runtime, manifest, entry)
+    const state = pluginState(this.options.runtime, manifest, entry, readInstallRecords(this.options.runtime.dir))
     if (isRestartPending(state.state)) {
       return emptyPlan(request, this.options.runtime.profileName, 'restart-required', entry)
     }
+    const origin = installedOrigin(state.installedSpec)
+    const sameOrigin = origin !== null && sameRepository(origin, entry)
     let action: 'install' | 'update' | 'remove'
     if (request.action === 'remove') {
       if (state.installedSpec === null) return emptyPlan(request, this.options.runtime.profileName, 'not-installed', entry)
@@ -394,7 +507,7 @@ export class MarketplaceProfileOperations {
       if (entry.package.name === null || entry.package.version === null || !hasExactReviewedSource(entry)) {
         return emptyPlan(request, this.options.runtime.profileName, 'package-metadata-missing', entry)
       }
-      if (state.state === 'active' && !state.updateAvailable) {
+      if (state.state === 'active' && sameOrigin && !state.updateAvailable) {
         return emptyPlan(request, this.options.runtime.profileName, 'already-installed', entry)
       }
       action = state.installedSpec === null ? 'install' : 'update'
@@ -403,6 +516,7 @@ export class MarketplaceProfileOperations {
     if (action !== 'remove') {
       warnings.unshift('git-source', 'install-scripts-disabled')
       if (entry.compatibility === 'unknown') warnings.unshift('compatibility-unknown')
+      if (state.installedSpec !== null && !sameOrigin) warnings.push('origin-differs')
     }
     const planId = marketplacePlanId(randomUUID())
     const expiresAt = new Date(this.now() + PLAN_TTL_MS).toISOString()
@@ -530,6 +644,29 @@ export class MarketplaceProfileOperations {
     } catch {
       const rollback = await this.rollback(backups)
       return this.failure(rollback === 'failed' ? 'rollback-failed' : 'installed-package-invalid', plan, rollback)
+    }
+    // Record provenance for pins this Marketplace placed, so future snapshots
+    // can tell a proven catalog advance (update-available) from an unexplained
+    // pin change (diverged). Advisory only: a failed write degrades the next
+    // snapshot to 'diverged', never to a false claim.
+    try {
+      const records = { ...readInstallRecords(this.options.runtime.dir) }
+      if (plan.action === 'remove') {
+        delete records[packageName]
+      } else {
+        records[packageName] = {
+          spec: plan.sourceRef as string,
+          commitSha: plan.commitSha?.toLowerCase() ?? null,
+          installedAt: new Date(this.now()).toISOString(),
+        }
+      }
+      await writeFileAtomic(
+        join(this.options.runtime.dir, INSTALL_STATE_FILE),
+        `${JSON.stringify({ schemaVersion: 1, installs: records }, undefined, 2)}\n`,
+        { mode: 0o600, dirMode: 0o700 },
+      )
+    } catch {
+      // Provenance is best-effort; the profile mutation above is already committed.
     }
     return {
       status: 'succeeded',

@@ -69,7 +69,7 @@ const STATE_KEYS = {
 
 const WARNING_KEYS = {
   'compatibility-unknown': 'operation.warning.compatibility', 'git-source': 'operation.warning.git', 'code-executes-on-restart': 'operation.warning.code',
-  'install-scripts-disabled': 'operation.warning.scripts', 'restart-required': 'operation.warning.restart',
+  'install-scripts-disabled': 'operation.warning.scripts', 'restart-required': 'operation.warning.restart', 'origin-differs': 'operation.warning.origin',
 } satisfies Record<MarketplaceOperationPlan['warnings'][number], PluginMarketplaceLocaleKey>
 
 const RISK_KEYS = {
@@ -269,6 +269,17 @@ function sortInstalledItems(items: readonly MarketplaceInstalledListItem[], sort
   return copy.sort((left, right) => Number(right.state.updateAvailable) - Number(left.state.updateAvailable) || byName(left, right))
 }
 
+function RelationChip({ state, t }: { state: ProfilePluginState; t: Translate }): ReactNode {
+  if (state.updateAvailable) return <span className={css.updateBadge}>{t('installed.updateAvailable')}</span>
+  if (state.catalogRelation === 'diverged') {
+    return <span className={css.relationChip} title={t('installed.divergedHint')}>{t('installed.diverged')}</span>
+  }
+  if (state.catalogRelation === 'not-in-catalog') {
+    return <span className={css.relationChip} title={t('installed.notInCatalogHint')}>{t('installed.notInCatalog')}</span>
+  }
+  return null
+}
+
 function InstalledRow({ item, t, canInstall, onOpen, onUpdate, onRemove, onConfigure }: {
   item: MarketplaceInstalledListItem
   t: Translate
@@ -279,24 +290,32 @@ function InstalledRow({ item, t, canInstall, onOpen, onUpdate, onRemove, onConfi
   onConfigure: () => void
 }): ReactNode {
   const { state, plugin } = item
-  const name = plugin?.name ?? state.packageName ?? plugin?.repositoryFullName ?? state.repositoryId
+  const name = plugin?.name ?? state.packageName ?? plugin?.repositoryFullName ?? state.installedRepository ?? ''
+  const specOwner = state.installedRepository?.split('/')[0] ?? null
   const pending = isRestartPending(state.state)
+  const manageable = plugin !== null && state.repositoryId !== null
   return <li className={css.row}>
     {plugin === null
       ? <div className={css.rowStatic}><span className={css.rowMain}>
-        <span className={css.avatarFallback} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || '?'}</span>
+        {specOwner === null
+          ? <span className={css.avatarFallback} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || '?'}</span>
+          : <PluginAvatar publisher={specOwner} name={name} />}
         <span className={css.rowPrimary}>
-          <span className={css.rowHeading}><strong className={css.rowTitle}>{name}</strong></span>
-          <span className={css.rowMeta}>{state.installedVersion !== null ? <span>{t('installed.version', { version: state.installedVersion })}</span> : null}</span>
+          <span className={css.rowHeading}><strong className={css.rowTitle}>{name}</strong><RelationChip state={state} t={t} /></span>
+          {state.installedRepository !== null ? <span className={css.rowPeople}>{t('row.publisher', { publisher: specOwner ?? '' })}</span> : null}
+          <span className={css.rowMeta}>
+            {state.installedVersion !== null ? <span>{t('installed.version', { version: state.installedVersion })}</span> : null}
+            {state.installedRepository !== null ? <code className={css.rowPackage}>{state.installedRepository}</code> : null}
+          </span>
         </span>
       </span></div>
-      : <button className={css.rowOpen} type="button" onClick={() => { onOpen(state.repositoryId) }}><span className={css.rowMain}>
+      : <button className={css.rowOpen} type="button" onClick={() => { onOpen(state.repositoryId as string) }}><span className={css.rowMain}>
         <PluginAvatar publisher={plugin.publisher} name={name} />
         <span className={css.rowPrimary}>
           <span className={css.rowHeading}>
             <strong className={css.rowTitle} title={name}>{name}</strong>
             <CategoryChip category={plugin.category} t={t} />
-            {state.updateAvailable ? <span className={css.updateBadge}>{t('installed.updateAvailable')}</span> : null}
+            <RelationChip state={state} t={t} />
           </span>
           <span className={css.rowPeople}>{t('row.publisher', { publisher: plugin.publisher })} · {t('card.stars', { count: plugin.stars })}</span>
           <span className={css.rowMeta}>
@@ -307,9 +326,9 @@ function InstalledRow({ item, t, canInstall, onOpen, onUpdate, onRemove, onConfi
       </span></button>}
     <div className={css.rowAction}>
       <span className={css.stateBadge}>{t(STATE_KEYS[state.state])}</span>
-      {plugin !== null && state.updateAvailable && !pending ? <button type="button" className={css.primaryButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onUpdate(state.repositoryId) }}>{t('operation.update')}</button> : null}
+      {manageable && state.updateAvailable && !pending ? <button type="button" className={css.primaryButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onUpdate(state.repositoryId as string) }}>{t('operation.update')}</button> : null}
       {state.state === 'active' ? <button type="button" className={css.secondaryButton} onClick={onConfigure}>{t('operation.configure')}</button> : null}
-      {plugin !== null && !pending ? <button type="button" className={css.dangerButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onRemove(state.repositoryId) }}>{t('operation.remove')}</button> : null}
+      {manageable && !pending ? <button type="button" className={css.dangerButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onRemove(state.repositoryId as string) }}>{t('operation.remove')}</button> : null}
     </div>
   </li>
 }
@@ -485,7 +504,7 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
           <label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={installedSort} onChange={(event) => { setInstalledSort(event.currentTarget.value as InstalledSort) }}><option value="updates">{t('installed.sort.updates')}</option><option value="name">{t('installed.sort.name')}</option><option value="updated">{t('installed.sort.updated')}</option></select></label>
         </div>
         {visibleInstalled.length === 0 && visibleExternal.length === 0 ? <p className={css.status}>{t('installed.empty')}</p> : null}
-        {visibleInstalled.length > 0 ? <ul className={css.rows}>{visibleInstalled.map(item => <InstalledRow key={item.state.repositoryId} item={item} t={t} canInstall={canInstall} onOpen={openPlugin} onUpdate={installPlugin} onRemove={removePlugin} onConfigure={() => { activateTab('configurable') }} />)}</ul> : null}
+        {visibleInstalled.length > 0 ? <ul className={css.rows}>{visibleInstalled.map(item => <InstalledRow key={item.state.repositoryId ?? item.state.packageName} item={item} t={t} canInstall={canInstall} onOpen={openPlugin} onUpdate={installPlugin} onRemove={removePlugin} onConfigure={() => { activateTab('configurable') }} />)}</ul> : null}
         {visibleExternal.length > 0 ? <>
           <h4 className={css.externalHeading}>{t('installed.external')}</h4>
           <p className={css.status}>{t('installed.externalHint')}</p>

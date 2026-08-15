@@ -221,9 +221,21 @@ export interface MarketplacePluginDetailResponse {
 /** Opaque, short-lived identifier for one reviewed profile operation. */
 export type MarketplacePlanId = string & { readonly __marketplacePlanId: unique symbol }
 
+/** Relationship between the installed pin and the catalog pin for one package. */
+export type MarketplaceCatalogRelation =
+  /** Installed pin matches the catalog pin (or nothing is pinned right now). */
+  | 'up-to-date'
+  /** The Marketplace installed this exact pin and the catalog has since moved forward. */
+  | 'update-available'
+  /** Same repository, but the pin differs and the direction cannot be proven locally. */
+  | 'diverged'
+  /** The installed repository is not described by the catalog at all. */
+  | 'not-in-catalog'
+
 /** Current-profile state of one catalog package. */
 export interface MarketplaceProfilePluginState {
-  readonly repositoryId: string
+  /** Catalog identity, attached only when the installed origin matches the entry's repository. */
+  readonly repositoryId: string | null
   readonly packageName: string | null
   readonly state:
     | 'not-installed'
@@ -234,7 +246,11 @@ export interface MarketplaceProfilePluginState {
     | 'installed-inactive'
   readonly installedVersion: string | null
   readonly installedSpec: string | null
-  readonly catalogSpec: string
+  /** Repository (owner/name) parsed from the installed spec, regardless of catalog membership. */
+  readonly installedRepository: string | null
+  readonly catalogSpec: string | null
+  readonly catalogRelation: MarketplaceCatalogRelation
+  /** True only when the update direction is proven; never claimed for diverged or foreign pins. */
   readonly updateAvailable: boolean
 }
 
@@ -294,6 +310,7 @@ export type MarketplacePlanWarning =
   | 'code-executes-on-restart'
   | 'install-scripts-disabled'
   | 'restart-required'
+  | 'origin-differs'
 
 /** Exact, expiring operation review produced from the current catalog and profile state. */
 export interface MarketplaceOperationPlan {

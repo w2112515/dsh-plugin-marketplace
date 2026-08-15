@@ -180,6 +180,14 @@ describe('MarketplaceProfileOperations', () => {
     const catalog = catalogFixture()
     const oldSpec = 'git+https://github.com/example/dsh-weather-bundle.git#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     const runtime = await stageActiveProfile(catalog, oldSpec)
+    // An update offer requires Marketplace provenance: the Marketplace itself
+    // placed the current pin, so a moved catalog pin can only be newer.
+    await writeFile(join(runtime.dir, 'dsh-plugin-marketplace.installs.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      installs: {
+        '@example/dsh-weather-bundle': { spec: oldSpec, commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', installedAt: '2026-08-14T00:00:00.000Z' },
+      },
+    })}\n`)
     const calls: string[][] = []
     const runner = async (args: readonly string[]) => {
       calls.push([...args])
@@ -202,9 +210,13 @@ describe('MarketplaceProfileOperations', () => {
 
     const update = operations.plan({ repositoryId: '123456', action: 'install' })
     expect(update).toMatchObject({ status: 'ready', action: 'update' })
-    await expect(operations.execute({ planId: update.planId! })).resolves.toMatchObject({
+    const updated = await operations.execute({ planId: update.planId! })
+    expect(updated).toMatchObject({
       status: 'succeeded', action: 'update', snapshot: { plugins: [{ state: 'pending-update' }] },
     })
+    // The installed pin now matches the catalog pin, so no further update is claimed.
+    expect(updated.snapshot.plugins[0]?.catalogRelation).toBe('up-to-date')
+    expect(updated.snapshot.plugins[0]?.updateAvailable).toBe(false)
 
     // A restart is required before a second operation is admitted. Model that
     // restart with a new manager whose immutable launch snapshot is current.
@@ -217,12 +229,16 @@ describe('MarketplaceProfileOperations', () => {
     })
     const remove = removal.plan({ repositoryId: '123456', action: 'remove' })
     expect(remove).toMatchObject({ status: 'ready', action: 'remove' })
-    await expect(removal.execute({ planId: remove.planId! })).resolves.toMatchObject({
+    const removed = await removal.execute({ planId: remove.planId! })
+    expect(removed).toMatchObject({
       status: 'succeeded', action: 'remove', snapshot: { plugins: [{ state: 'pending-removal' }] },
     })
     expect(calls.map(args => args[0])).toEqual(['add', 'remove'])
     // pnpm remove rejects --ignore-scripts; the remove argv must stay flag-free.
     expect(calls[1]).toEqual(['remove', catalog.entries[0]!.package.name])
+    // Provenance follows the profile: the removed package's record is gone.
+    const records = JSON.parse(await readFile(join(runtime.dir, 'dsh-plugin-marketplace.installs.json'), 'utf8')) as { installs: Record<string, unknown> }
+    expect(records.installs).toEqual({})
   })
 
   it('rejects expired plans and profile drift without invoking pnpm', async () => {
@@ -319,7 +335,7 @@ describe('MarketplaceProfileOperations', () => {
     expect(snapshot.plugins[0]?.repositoryId).toBe('123456')
   })
 
-  it('keeps the installed plugin identity when the catalog commit lags behind the installed one', async () => {
+  it('keeps identity on a differing pin but reports diverged, never a downgrade as an update', async () => {
     const runtime = await stageActiveProfile(
       catalogFixture(),
       'github:example/dsh-weather-bundle#eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
@@ -333,7 +349,61 @@ describe('MarketplaceProfileOperations', () => {
     const snapshot = operations.snapshot()
     expect(snapshot.plugins).toHaveLength(1)
     expect(snapshot.plugins[0]?.repositoryId).toBe('123456')
-    expect(snapshot.plugins[0]?.updateAvailable).toBe(true)
+    // Same repository, unexplained pin difference: direction is unknowable
+    // locally, so no update funnel and no silent downgrade path.
+    expect(snapshot.plugins[0]?.catalogRelation).toBe('diverged')
+    expect(snapshot.plugins[0]?.updateAvailable).toBe(false)
+    expect(operations.plan({ repositoryId: '123456', action: 'install' }))
+      .toMatchObject({ status: 'blocked', blockCode: 'already-installed' })
+  })
+
+  it('marks an installed package as not-in-catalog when its origin leaves the catalog', async () => {
+    const runtime = await stageActiveProfile(
+      catalogFixture(),
+      'github:stranger/dsh-weather-bundle#eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    )
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => catalogFixture(),
+      capabilities,
+      runPnpm: async () => { throw new Error('must not run') },
+    })
+    const snapshot = operations.snapshot()
+    expect(snapshot.plugins).toHaveLength(1)
+    expect(snapshot.plugins[0]).toMatchObject({
+      repositoryId: null,
+      packageName: '@example/dsh-weather-bundle',
+      state: 'active',
+      installedRepository: 'stranger/dsh-weather-bundle',
+      catalogSpec: null,
+      catalogRelation: 'not-in-catalog',
+      updateAvailable: false,
+    })
+  })
+
+  it('discloses when an update would replace a build from a different repository', async () => {
+    const base = catalogFixture().entries[0]!
+    const runtime = await stageActiveProfile(catalogFixture())
+    const foreignSha = 'ffffffffffffffffffffffffffffffffffffffff'
+    const foreign = {
+      ...base,
+      repositoryId: '999999',
+      repository: { ...base.repository, fullName: 'copy/dsh-weather-bundle', commitSha: foreignSha },
+      source: { ...base.source, ref: `git+https://github.com/copy/dsh-weather-bundle.git#${foreignSha}` },
+    }
+    const catalog = catalogFixture({
+      entries: [base, foreign],
+      summary: { entryCount: 2, invalidEntryCount: 0 },
+    })
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => catalog,
+      capabilities,
+      runPnpm: async () => { throw new Error('must not run') },
+    })
+    const plan = operations.plan({ repositoryId: '999999', action: 'install' })
+    expect(plan).toMatchObject({ status: 'ready', action: 'update' })
+    expect(plan.warnings).toContain('origin-differs')
   })
 
   it('blocks an unwritable profile before writing', async () => {

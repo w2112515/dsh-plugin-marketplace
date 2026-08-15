@@ -154,6 +154,18 @@ export class GitHubMarketplaceClient {
     }
   }
 
+  /**
+   * Look up one repository by its stable numeric id, following renames.
+   * Returns null only when GitHub proves it is gone (deleted or made private);
+   * transient failures throw so the caller can keep its last-known-good state.
+   */
+  async getRepositoryById(id: string): Promise<GitHubRepository | null> {
+    const response = await this.request(`/repositories/${encodeURIComponent(id)}`, undefined, [404, 410])
+    if (response.status === 404 || response.status === 410) return null
+    const body: unknown = await response.json()
+    return repositoryFromApi(body)
+  }
+
   /** Read root-relative repository content with ETag revalidation. */
   async getContent(fullName: string, path: string, ref: string, etag: string | null): Promise<GitHubContentResult> {
     const encodedPath = path.split('/').map(encodeURIComponent).join('/')

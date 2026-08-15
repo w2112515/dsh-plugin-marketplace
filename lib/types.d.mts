@@ -177,14 +177,29 @@ interface MarketplacePluginDetailResponse {
 type MarketplacePlanId = string & {
   readonly __marketplacePlanId: unique symbol;
 };
+/** Relationship between the installed pin and the catalog pin for one package. */
+type MarketplaceCatalogRelation =
+/** Installed pin matches the catalog pin (or nothing is pinned right now). */
+'up-to-date' |
+/** The Marketplace installed this exact pin and the catalog has since moved forward. */
+'update-available' |
+/** Same repository, but the pin differs and the direction cannot be proven locally. */
+'diverged' |
+/** The installed repository is not described by the catalog at all. */
+'not-in-catalog';
 /** Current-profile state of one catalog package. */
 interface MarketplaceProfilePluginState {
-  readonly repositoryId: string;
+  /** Catalog identity, attached only when the installed origin matches the entry's repository. */
+  readonly repositoryId: string | null;
   readonly packageName: string | null;
   readonly state: 'not-installed' | 'active' | 'pending-install' | 'pending-update' | 'pending-removal' | 'installed-inactive';
   readonly installedVersion: string | null;
   readonly installedSpec: string | null;
-  readonly catalogSpec: string;
+  /** Repository (owner/name) parsed from the installed spec, regardless of catalog membership. */
+  readonly installedRepository: string | null;
+  readonly catalogSpec: string | null;
+  readonly catalogRelation: MarketplaceCatalogRelation;
+  /** True only when the update direction is proven; never claimed for diverged or foreign pins. */
   readonly updateAvailable: boolean;
 }
 /** Profile package that no catalog entry describes; manageable only outside the Marketplace. */
@@ -223,7 +238,7 @@ interface MarketplacePlanRequest {
 /** Stable reason that blocks a requested operation before any profile write. */
 type MarketplacePlanBlockCode = 'catalog-entry-missing' | 'not-one-click-eligible' | 'package-metadata-missing' | 'already-installed' | 'not-installed' | 'restart-required' | 'package-manager-unavailable' | 'profile-not-writable';
 /** Warning disclosed before the user confirms code installation or removal. */
-type MarketplacePlanWarning = 'compatibility-unknown' | 'git-source' | 'code-executes-on-restart' | 'install-scripts-disabled' | 'restart-required';
+type MarketplacePlanWarning = 'compatibility-unknown' | 'git-source' | 'code-executes-on-restart' | 'install-scripts-disabled' | 'restart-required' | 'origin-differs';
 /** Exact, expiring operation review produced from the current catalog and profile state. */
 interface MarketplaceOperationPlan {
   readonly status: 'ready' | 'blocked';
@@ -257,5 +272,5 @@ interface MarketplaceOperationResult {
   readonly snapshot: MarketplaceOperationSnapshot;
 }
 //#endregion
-export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
+export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogRelation, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
 //# sourceMappingURL=types.d.mts.map
