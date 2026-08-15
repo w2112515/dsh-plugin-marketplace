@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, relative } from 'node:path'
 import { transform } from 'lightningcss'
 import { defineConfig, type UserConfig } from 'tsdown'
 
@@ -59,8 +59,13 @@ const client: UserConfig = {
       const pathname = id.slice(CSS_PREFIX.length, -CSS_SUFFIX.length)
       const file = process.platform === 'win32' && /^\/[A-Za-z]:/.test(pathname) ? pathname.slice(1) : pathname
       this.addWatchFile(file)
+      // lightningcss folds `filename` into the css-modules class hash, so an
+      // absolute path would make the build machine-dependent and the tracked
+      // lib/ output impossible to verify in CI. A repo-relative name keeps
+      // class names stable on every machine.
+      const stableName = relative(process.cwd(), file).replace(/\\/g, '/')
       const result = transform({
-        filename: file,
+        filename: stableName,
         code: await readFile(file),
         cssModules: { pattern: '[hash]_[local]' },
         minify: true,
