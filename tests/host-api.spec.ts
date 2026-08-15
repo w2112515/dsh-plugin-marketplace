@@ -100,7 +100,7 @@ describe('out-of-tree Host API', () => {
     await apply(ctx, config)
     expect(route).not.toBeNull()
     const apiServer = await listen((req, res) => (route as RequestListener)(req, res))
-    const request = { query: '', installability: 'all', sort: 'recommended', page: 1 }
+    const request = { query: '', category: 'all', installability: 'all', sort: 'recommended', page: 1 }
 
     const bootstrap = await post<{ ok: true; value: MarketplaceBootstrapResponse }>(apiServer.origin, {
       method: 'bootstrap', params: request,
@@ -123,6 +123,16 @@ describe('out-of-tree Host API', () => {
     })
     expect(refresh.body.value).toMatchObject({ changed: false, list: null, source: 'network', error: null })
     expect(catalogRequests).toBe(2)
+
+    const installed = await post<{ ok: true; value: { items: unknown[]; external: unknown[] } }>(apiServer.origin, {
+      method: 'installed',
+    })
+    expect(installed.body.value).toMatchObject({ items: [], external: [] })
+
+    const badCategory = await post<{ ok: false; error: { code: string } }>(apiServer.origin, {
+      method: 'list', params: { ...request, category: 'invented' },
+    })
+    expect(badCategory).toMatchObject({ status: 400, body: { ok: false, error: { code: 'request-invalid' } } })
 
     const denied = await post<{ ok: false; error: { code: string } }>(apiServer.origin, {
       method: 'list', params: request,

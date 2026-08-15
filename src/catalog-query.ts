@@ -3,8 +3,11 @@
 import type {
   MarketplaceCatalogEntry,
   MarketplaceCatalogView,
+  MarketplaceCategory,
+  MarketplaceInstalledResponse,
   MarketplaceListRequest,
   MarketplaceListResponse,
+  MarketplaceOperationSnapshot,
   MarketplacePluginDetailResponse,
   MarketplacePluginSummary,
   MarketplaceProfilePluginState,
@@ -12,6 +15,52 @@ import type {
 
 export const MARKETPLACE_PAGE_SIZE = 50
 const ACTIVE_WINDOW_MS = 180 * 24 * 60 * 60 * 1000
+
+/** Fixed taxonomy priority: the first matching category wins, one chip per row. */
+export const MARKETPLACE_CATEGORY_PRIORITY: readonly MarketplaceCategory[] = ['theme', 'memory', 'ui', 'tool']
+
+/**
+ * Conservative fallback tokens matched against whole words from topics, keywords,
+ * and repository/package names. Anything unmatched stays honestly uncategorized.
+ */
+const CATEGORY_TOKENS: Readonly<Record<MarketplaceCategory, readonly string[]>> = {
+  theme: ['theme', 'themes', 'skin', 'skins', 'color-scheme', 'colour-scheme', 'appearance'],
+  memory: ['memory', 'memories', 'rag', 'embedding', 'embeddings', 'vector', 'vectors', 'knowledge', 'recall'],
+  ui: ['ui', 'tui', 'gui', 'webui', 'sidebar', 'dashboard', 'panel', 'interface', 'layout'],
+  tool: ['tool', 'tools', 'mcp', 'ocr', 'vision', 'terminal', 'cli', 'automation', 'notify', 'notification'],
+}
+
+const CATEGORY_DECLARATION = /^dsh-category-([a-z-]+)$/u
+
+/**
+ * Derive one category from facts already in the catalog entry. An explicit
+ * `dsh-category-<slug>` topic wins; otherwise whole-word fallback tokens decide.
+ * @param entry - Admitted catalog entry.
+ * @returns The derived category, or null when nothing matches honestly.
+ */
+export function deriveMarketplaceCategory(entry: MarketplaceCatalogEntry): MarketplaceCategory | null {
+  for (const topic of entry.topics) {
+    const declared = CATEGORY_DECLARATION.exec(topic)
+    const slug = declared?.[1]
+    if (slug !== undefined && (MARKETPLACE_CATEGORY_PRIORITY as readonly string[]).includes(slug)) {
+      return slug as MarketplaceCategory
+    }
+  }
+  const tokens = new Set<string>()
+  const collect = (value: string): void => {
+    for (const token of value.toLocaleLowerCase().split(/[^a-z0-9]+/u)) {
+      if (token.length > 0) tokens.add(token)
+    }
+  }
+  for (const topic of entry.topics) collect(topic)
+  for (const keyword of entry.keywords) collect(keyword)
+  collect(entry.package.name ?? '')
+  collect(entry.repository.fullName)
+  for (const category of MARKETPLACE_CATEGORY_PRIORITY) {
+    if (CATEGORY_TOKENS[category].some(token => tokens.has(token))) return category
+  }
+  return null
+}
 
 interface RankedEntry {
   readonly entry: MarketplaceCatalogEntry
@@ -39,8 +88,10 @@ function summary(entry: MarketplaceCatalogEntry): MarketplacePluginSummary {
     description: entry.package.description,
     license: entry.package.license,
     stars: entry.stars,
+    repositoryCreatedAt: entry.repositoryCreatedAt,
     lastCodePushAt: entry.lastCodePushAt,
     firstSeenAt: entry.firstSeenAt,
+    category: deriveMarketplaceCategory(entry),
     installability: entry.installability as MarketplacePluginSummary['installability'],
     compatibility: entry.compatibility,
     riskSignals: entry.riskSignals,
@@ -124,16 +175,26 @@ export function queryMarketplaceCatalog(
   view: MarketplaceCatalogView,
   request: MarketplaceListRequest,
 ): MarketplaceListResponse {
-  const entries = view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []
+  const admitted = view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []
+  const categorized = admitted.map(entry => ({ entry, category: deriveMarketplaceCategory(entry) }))
   const counts = {
-    all: entries.length,
-    oneClick: entries.filter(entry => entry.installability === 'one-click-eligible').length,
-    manual: entries.filter(entry => entry.installability === 'manual').length,
+    all: admitted.length,
+    oneClick: admitted.filter(entry => entry.installability === 'one-click-eligible').length,
+    manual: admitted.filter(entry => entry.installability === 'manual').length,
+    categories: {
+      theme: categorized.filter(item => item.category === 'theme').length,
+      memory: categorized.filter(item => item.category === 'memory').length,
+      ui: categorized.filter(item => item.category === 'ui').length,
+      tool: categorized.filter(item => item.category === 'tool').length,
+    },
+    uncategorized: categorized.filter(item => item.category === null).length,
   }
   const words = normalizedWords(request.query)
-  const selected = entries
-    .filter(entry => request.installability === 'all' || entry.installability === request.installability)
-    .map(entry => ({ entry, relevance: relevance(entry, words) }))
+  const selected = categorized
+    .filter(item => request.category === 'all'
+      || (request.category === 'uncategorized' ? item.category === null : item.category === request.category))
+    .filter(item => request.installability === 'all' || item.entry.installability === request.installability)
+    .map(item => ({ entry: item.entry, relevance: relevance(item.entry, words) }))
     .filter(item => item.relevance >= 0)
     .sort((left, right) => compareRanked(left, right, request, view.catalog?.generatedAt ?? '1970-01-01T00:00:00.000Z'))
   const pageCount = selected.length === 0 ? 0 : Math.ceil(selected.length / MARKETPLACE_PAGE_SIZE)
@@ -141,7 +202,7 @@ export function queryMarketplaceCatalog(
   const offset = (page - 1) * MARKETPLACE_PAGE_SIZE
   return {
     digest: view.catalog?.integrity.digest ?? '',
-    catalogStatus: view.catalog === null ? view.status : entries.length === 0 ? 'empty' : 'ready',
+    catalogStatus: view.catalog === null ? view.status : admitted.length === 0 ? 'empty' : 'ready',
     source: view.source,
     stale: view.stale,
     generatedAt: view.catalog?.generatedAt ?? null,
@@ -167,5 +228,23 @@ export function detailMarketplaceEntry(
   return {
     entry,
     state: entry === null ? null : states.find(candidate => candidate.repositoryId === repositoryId) ?? null,
+  }
+}
+
+/** Join the current-profile operation snapshot with admitted catalog summaries in one call. */
+export function installedMarketplacePlugins(
+  view: MarketplaceCatalogView,
+  snapshot: MarketplaceOperationSnapshot,
+): MarketplaceInstalledResponse {
+  const summaries = new Map<string, MarketplacePluginSummary>()
+  for (const entry of view.catalog?.entries.filter(isPublicMarketplaceEntry) ?? []) {
+    summaries.set(entry.repositoryId, summary(entry))
+  }
+  return {
+    profileName: snapshot.profileName,
+    busy: snapshot.busy,
+    capabilities: snapshot.capabilities,
+    items: snapshot.plugins.map(state => ({ state, plugin: summaries.get(state.repositoryId) ?? null })),
+    external: snapshot.external,
   }
 }

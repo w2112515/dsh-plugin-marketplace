@@ -1,8 +1,10 @@
 /** Same-origin Host API to presentation-model adapter for the external marketplace bundle. */
 
+import { deriveMarketplaceCategory } from '../catalog-query.ts'
 import type {
   MarketplaceBootstrapResponse,
   MarketplaceCatalogEntry,
+  MarketplaceInstalledResponse,
   MarketplaceListRequest,
   MarketplaceListResponse,
   MarketplaceOperationPlan,
@@ -15,12 +17,14 @@ import type {
 } from '../types.ts'
 
 export type {
+  MarketplaceCategory,
+  MarketplaceInstalledListItem,
   MarketplaceListRequest,
   MarketplaceOperationPlan,
   MarketplaceOperationResult,
   MarketplaceOperationSnapshot,
   MarketplacePlanRequest,
-}
+} from '../types.ts'
 
 /** Package-private same-origin API face, independent of DSH's static Remote assembly. */
 export interface MarketplaceCatalogRemoteFace {
@@ -29,6 +33,7 @@ export interface MarketplaceCatalogRemoteFace {
   detail: (request: { readonly repositoryId: string }) => Promise<MarketplacePluginDetailResponse>
   refresh: (request: { readonly request: MarketplaceListRequest; readonly currentDigest: string }) => Promise<MarketplaceRefreshResponse>
   operationSnapshot: () => Promise<MarketplaceOperationSnapshot>
+  installed: () => Promise<MarketplaceInstalledResponse>
   plan: (request: MarketplacePlanRequest) => Promise<MarketplaceOperationPlan>
   execute: (request: { readonly planId: NonNullable<MarketplaceOperationPlan['planId']> }) => Promise<MarketplaceOperationResult>
 }
@@ -46,8 +51,10 @@ export interface MarketplacePluginRowModel {
   readonly description: string | null
   readonly license: string | null
   readonly stars: number
+  readonly repositoryCreatedAt: string
   readonly lastCodePushAt: string
   readonly firstSeenAt: string
+  readonly category: MarketplacePluginSummary['category']
   readonly installability: MarketplacePluginSummary['installability']
   readonly compatibility: MarketplacePluginSummary['compatibility']
 }
@@ -70,6 +77,7 @@ export interface MarketplacePluginDetailModel {
   readonly repositoryCreatedAt: string
   readonly lastCodePushAt: string
   readonly firstSeenAt: string
+  readonly category: MarketplacePluginSummary['category']
   readonly validationStatus: MarketplaceCatalogEntry['validation']['status']
   readonly validationMessage: string | null
   readonly compatibility: MarketplaceCatalogEntry['compatibility']
@@ -96,8 +104,10 @@ export function toPluginRowModel(entry: MarketplacePluginSummary): MarketplacePl
     description: entry.description,
     license: entry.license,
     stars: entry.stars,
+    repositoryCreatedAt: entry.repositoryCreatedAt,
     lastCodePushAt: entry.lastCodePushAt,
     firstSeenAt: entry.firstSeenAt,
+    category: entry.category,
     installability: entry.installability,
     compatibility: entry.compatibility,
   }
@@ -127,6 +137,7 @@ export function toPluginDetailModel(response: MarketplacePluginDetailResponse): 
     repositoryCreatedAt: entry.repositoryCreatedAt,
     lastCodePushAt: entry.lastCodePushAt,
     firstSeenAt: entry.firstSeenAt,
+    category: deriveMarketplaceCategory(entry),
     validationStatus: entry.validation.status,
     validationMessage: entry.validation.message,
     compatibility: entry.compatibility,
@@ -163,6 +174,10 @@ export async function refreshMarketplace(
 
 export function readOperationSnapshot(remote: MarketplaceCatalogRemoteFace): Promise<MarketplaceOperationSnapshot> {
   return remote.operationSnapshot()
+}
+
+export function installedMarketplace(remote: MarketplaceCatalogRemoteFace): Promise<MarketplaceInstalledResponse> {
+  return remote.installed()
 }
 
 export function planMarketplaceOperation(remote: MarketplaceCatalogRemoteFace, request: MarketplacePlanRequest): Promise<MarketplaceOperationPlan> {

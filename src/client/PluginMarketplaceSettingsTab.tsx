@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { IconChevronLeftOutline14, IconCloseOutline16, IconRefreshOutline16, IconRightUpOutline14, IconSearchOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
+  MarketplaceCategory,
+  MarketplaceInstalledListItem,
   MarketplaceListModel,
   MarketplaceListRequest,
   MarketplaceOperationPlan,
@@ -11,6 +13,7 @@ import type {
   MarketplacePluginDetailModel,
   MarketplacePluginRowModel,
 } from './marketplace-adapter.ts'
+import type { MarketplaceExternalPlugin, MarketplaceInstalledResponse } from '../types.ts'
 import type { PluginMarketplaceLocaleKey } from './locales.ts'
 import css from './PluginMarketplaceSettingsTab.module.css'
 
@@ -18,8 +21,9 @@ export interface PluginMarketplaceSettingsTabInjected {
   bootstrap: (request: MarketplaceListRequest) => Promise<{ readonly list: MarketplaceListModel; readonly operations: MarketplaceOperationSnapshot }>
   list: (request: MarketplaceListRequest) => Promise<MarketplaceListModel>
   detail: (repositoryId: string) => Promise<MarketplacePluginDetailModel | null>
-  refresh: (request: MarketplaceListRequest, currentDigest: string) => Promise<{ readonly changed: boolean; readonly list: MarketplaceListModel | null; readonly source: MarketplaceListModel['source']; readonly stale: boolean; readonly lastSuccessfulFetchAt: string | null; readonly error: MarketplaceListModel['error'] }>
+  refresh: (request: MarketplaceListRequest, currentDigest: string) => Promise<{ readonly changed: boolean; readonly list: MarketplaceListModel | null; readonly source: MarketplaceListModel['source']; readonly stale: MarketplaceListModel['stale']; readonly lastSuccessfulFetchAt: string | null; readonly error: MarketplaceListModel['error'] }>
   operationSnapshot: () => Promise<MarketplaceOperationSnapshot>
+  installed: () => Promise<MarketplaceInstalledResponse>
   plan: (request: MarketplacePlanRequest) => Promise<MarketplaceOperationPlan>
   execute: (planId: NonNullable<MarketplaceOperationPlan['planId']>) => Promise<MarketplaceOperationResult>
   activateTab: (id: string) => void
@@ -27,23 +31,32 @@ export interface PluginMarketplaceSettingsTabInjected {
 
 export type PluginMarketplaceSettingsTabProps = PropsRuntime<'settings.plugins.tab'> & PropsLocale<'settings.pluginMarketplace'> & InjectFace<PluginMarketplaceSettingsTabInjected>
 type Translate = PluginMarketplaceSettingsTabProps['t']
+type ViewKey = 'discover' | 'installed'
+type CategoryFilter = MarketplaceCategory | 'uncategorized' | 'all'
 type InstallFilter = 'all' | 'one-click' | 'manual'
 type SortKey = 'recommended' | 'stars' | 'updated' | 'added'
+type InstalledSort = 'updates' | 'name' | 'updated'
 type DetailState = { readonly status: 'idle' | 'loading' } | { readonly status: 'ready'; readonly plugin: MarketplacePluginDetailModel } | { readonly status: 'missing' | 'error'; readonly message?: string }
+type ProfilePluginState = MarketplaceOperationSnapshot['plugins'][number]
 
 function formatTime(iso: string): string {
   const time = Date.parse(iso)
   return Number.isNaN(time) ? iso : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(time)
 }
 
-function requestFor(query: string, filter: InstallFilter, sort: SortKey, page: number): MarketplaceListRequest {
+function requestFor(query: string, category: CategoryFilter, filter: InstallFilter, sort: SortKey, page: number): MarketplaceListRequest {
   return {
     query: query.trim(),
+    category,
     installability: filter === 'one-click' ? 'one-click-eligible' : filter,
     sort: sort === 'updated' ? 'recently-updated' : sort === 'added' ? 'recently-added' : sort,
     page,
   }
 }
+
+const CATEGORY_KEYS = {
+  theme: 'category.theme', ui: 'category.ui', tool: 'category.tool', memory: 'category.memory',
+} satisfies Record<MarketplaceCategory, PluginMarketplaceLocaleKey>
 
 const ACTION_KEYS = {
   install: 'operation.action.install', update: 'operation.action.update', remove: 'operation.action.remove',
@@ -52,7 +65,7 @@ const ACTION_KEYS = {
 const STATE_KEYS = {
   'not-installed': 'operation.state.not-installed', active: 'operation.state.active', 'pending-install': 'operation.state.pending-install',
   'pending-update': 'operation.state.pending-update', 'pending-removal': 'operation.state.pending-removal', 'installed-inactive': 'operation.state.installed-inactive',
-} satisfies Record<MarketplaceOperationSnapshot['plugins'][number]['state'], PluginMarketplaceLocaleKey>
+} satisfies Record<ProfilePluginState['state'], PluginMarketplaceLocaleKey>
 
 const WARNING_KEYS = {
   'compatibility-unknown': 'operation.warning.compatibility', 'git-source': 'operation.warning.git', 'code-executes-on-restart': 'operation.warning.code',
@@ -71,6 +84,30 @@ function canChangeProfile(profile: MarketplaceOperationSnapshot | null): boolean
   return profile !== null && profile.capabilities.profileWritable && profile.capabilities.packageManager !== 'unavailable'
 }
 
+function isRestartPending(state: ProfilePluginState['state'] | undefined): boolean {
+  return state === 'pending-install' || state === 'pending-update' || state === 'pending-removal'
+}
+
+function CategoryChip({ category, t }: { category: MarketplaceCategory | null; t: Translate }): ReactNode {
+  if (category === null) return null
+  return <span className={css.categoryChip}>{t(CATEGORY_KEYS[category])}</span>
+}
+
+/** GitHub owner avatar with an honest letter-tile fallback when the image cannot load. */
+function PluginAvatar({ publisher, name }: { publisher: string; name: string }): ReactNode {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return <span className={css.avatarFallback} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || '?'}</span>
+  }
+  return <img
+    className={css.avatar}
+    src={`https://github.com/${encodeURIComponent(publisher)}.png?size=64`}
+    alt=""
+    loading="lazy"
+    onError={() => { setFailed(true) }}
+  />
+}
+
 function CapabilityNotice({ profile, t }: { profile: MarketplaceOperationSnapshot | null; t: Translate }): ReactNode {
   if (profile === null) return <p className={css.capabilityNotice}>{t('operation.capability.checking')}</p>
   const { capabilities } = profile
@@ -79,8 +116,9 @@ function CapabilityNotice({ profile, t }: { profile: MarketplaceOperationSnapsho
   return <p className={css.capabilityReady}>{t(capabilities.packageManager === 'corepack-pnpm' ? 'operation.capability.corepackReady' : 'operation.capability.ready')}</p>
 }
 
-function PluginRow({ plugin, t, onOpen, onInstall, rowRef, canInstall }: {
+function PluginRow({ plugin, state, t, onOpen, onInstall, rowRef, canInstall }: {
   plugin: MarketplacePluginRowModel
+  state: ProfilePluginState | undefined
   t: Translate
   onOpen: (id: string) => void
   onInstall: (id: string) => void
@@ -90,18 +128,25 @@ function PluginRow({ plugin, t, onOpen, onInstall, rowRef, canInstall }: {
   const manual = plugin.installability === 'manual'
   return <li className={css.row}>
     <button ref={(node) => { rowRef(plugin.id, node) }} className={css.rowOpen} type="button" data-plugin-id={plugin.id} onClick={() => { onOpen(plugin.id) }}>
-      <span className={css.rowPrimary}>
-        <strong className={css.rowTitle} title={plugin.name}>{plugin.name}</strong>
-        <span className={css.rowPeople}>{t('row.publisher', { publisher: plugin.publisher })}{plugin.author && plugin.author !== plugin.publisher ? ` · ${t('row.author', { author: plugin.author })}` : ''}</span>
-        <code className={css.rowPackage}>{plugin.packageName ?? plugin.repositoryFullName}</code>
-        {plugin.description ? <span className={css.rowDescription}>{plugin.description}</span> : null}
-        <span className={css.rowMeta}><span>{t('card.stars', { count: plugin.stars })}</span><span>{t('card.pushed', { time: formatTime(plugin.lastCodePushAt) })}</span><span>{plugin.license ?? t('detail.license.missing')}</span></span>
+      <span className={css.rowMain}>
+        <PluginAvatar publisher={plugin.publisher} name={plugin.name} />
+        <span className={css.rowPrimary}>
+          <span className={css.rowHeading}>
+            <strong className={css.rowTitle} title={plugin.name}>{plugin.name}</strong>
+            <CategoryChip category={plugin.category} t={t} />
+          </span>
+          <span className={css.rowPeople}>{t('row.publisher', { publisher: plugin.publisher })}{plugin.author && plugin.author !== plugin.publisher ? ` · ${t('row.author', { author: plugin.author })}` : ''} · {t('card.stars', { count: plugin.stars })}</span>
+          {plugin.description ? <span className={css.rowDescription}>{plugin.description}</span> : null}
+          <span className={css.rowMeta}><span>{t('card.pushed', { time: formatTime(plugin.lastCodePushAt) })}</span><span>{t('card.published', { time: formatTime(plugin.repositoryCreatedAt) })}</span><span>{plugin.license ?? t('detail.license.missing')}</span></span>
+        </span>
       </span>
     </button>
     <div className={css.rowAction}>
-      {manual
-        ? <button type="button" className={css.secondaryButton} onClick={() => { onOpen(plugin.id) }}>{t('row.manualAction')}</button>
-        : <button type="button" className={css.primaryButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onInstall(plugin.id) }}>{t('row.installAction')}</button>}
+      {state !== undefined
+        ? <><span className={css.stateBadge}>{t(STATE_KEYS[state.state])}</span><button type="button" className={css.secondaryButton} onClick={() => { onOpen(plugin.id) }}>{t('row.manage')}</button></>
+        : manual
+          ? <button type="button" className={css.secondaryButton} onClick={() => { onOpen(plugin.id) }}>{t('row.manualAction')}</button>
+          : <button type="button" className={css.primaryButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onInstall(plugin.id) }}>{t('row.installAction')}</button>}
     </div>
   </li>
 }
@@ -122,7 +167,7 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
   const [result, setResult] = useState<MarketplaceOperationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false)
-  const restartPending = pluginState?.state === 'pending-install' || pluginState?.state === 'pending-update' || pluginState?.state === 'pending-removal'
+  const restartPending = isRestartPending(pluginState?.state)
   const installed = pluginState?.installedSpec !== null && pluginState?.installedSpec !== undefined
   const canInstall = canChangeProfile(profile)
   const requestPlan = (action: MarketplacePlanRequest['action']): void => {
@@ -135,6 +180,7 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
     if (initialAction === null) return
     onInitialActionConsumed()
     if (initialAction === 'install' && canInstall && !installed && !restartPending) requestPlan('install')
+    if (initialAction === 'remove' && canInstall && installed && !restartPending) requestPlan('remove')
   // Navigation intent triggers once; Host capability and profile state above remain the gate.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialAction])
@@ -155,7 +201,8 @@ function OperationPanel({ plugin, profile, t, planOperation, executeOperation, o
     {review?.status === 'blocked' ? <div className={css.reviewBox} role="status"><strong>{t('operation.blocked')}</strong><p>{t('operation.blockedReason', { code: review.blockCode ?? 'unknown' })}</p><button type="button" className={css.secondaryButton} onClick={() => { setReview(null) }}>{t('operation.dismiss')}</button></div> : null}
     {review?.status === 'ready' ? <div className={css.reviewBox}><strong>{t('operation.reviewTitle')}</strong><dl className={css.reviewFacts}><div><dt>{t('operation.reviewAction')}</dt><dd>{t(ACTION_KEYS[review.action ?? 'install'])}</dd></div><div><dt>{t('operation.reviewProfile')}</dt><dd>{review.profileName}</dd></div><div><dt>{t('operation.reviewPackage')}</dt><dd>{review.packageName} · {review.packageVersion}</dd></div><div><dt>{t('operation.reviewCommit')}</dt><dd><code>{review.commitSha}</code></dd></div></dl>{review.warnings.length > 0 ? <ul className={css.warningList}>{review.warnings.map(warning => <li key={warning}>{t(WARNING_KEYS[warning])}</li>)}</ul> : null}<div className={css.actionRow}><button type="button" className={css.primaryButton} disabled={working} onClick={confirm}>{working ? t('operation.working') : t('operation.confirm')}</button><button type="button" className={css.secondaryButton} disabled={working} onClick={() => { setReview(null) }}>{t('operation.cancel')}</button></div></div> : null}
     {review === null ? <div className={css.actionRow}>
-      {!installed ? <button type="button" className={css.primaryButton} disabled={working || restartPending || !canInstall || plugin.installability !== 'one-click-eligible'} onClick={() => { requestPlan('install') }}>{t('install.action')}</button> : null}
+      {!installed && plugin.installability === 'one-click-eligible' ? <button type="button" className={css.primaryButton} disabled={working || restartPending || !canInstall} onClick={() => { requestPlan('install') }}>{t('install.action')}</button> : null}
+      {!installed && plugin.installability !== 'one-click-eligible' ? <a className={css.secondaryButton} href={plugin.repositoryUrl} target="_blank" rel="noreferrer noopener">{t('row.manualAction')}<IconRightUpOutline14 aria-hidden="true" /></a> : null}
       {installed && pluginState?.updateAvailable && !restartPending ? <button type="button" className={css.primaryButton} disabled={working || !canInstall} onClick={() => { requestPlan('install') }}>{t('operation.update')}</button> : null}
       {pluginState?.state === 'active' ? <button type="button" className={css.secondaryButton} onClick={() => { activateTab('configurable') }}>{t('operation.configure')}</button> : null}
       {installed && !restartPending ? <button type="button" className={css.dangerButton} disabled={working || !canInstall} onClick={() => { requestPlan('remove') }}>{t('operation.remove')}</button> : null}
@@ -183,7 +230,17 @@ function PluginDetail({ plugin, profile, t, onBack, planOperation, executeOperat
   return <div className={css.detail}>
     <button className={css.backButton} type="button" onClick={onBack}><IconChevronLeftOutline14 aria-hidden="true" />{t('detail.back')}</button>
     <div className={css.detailContent}>
-      <header className={css.detailTitle}><h3 ref={headingRef} tabIndex={-1} className={css.detailName}>{plugin.name}</h3><p className={css.detailByline}>{t('row.publisher', { publisher: plugin.publisher })}{plugin.author && plugin.author !== plugin.publisher ? ` · ${t('row.author', { author: plugin.author })}` : ''}</p><p className={css.detailPackage}>{plugin.packageName ?? plugin.repositoryFullName}{plugin.packageVersion ? ` · ${plugin.packageVersion}` : ''}</p></header>
+      <header className={css.detailTitle}>
+        <div className={css.detailHeading}>
+          <PluginAvatar publisher={plugin.publisher} name={plugin.name} />
+          <div className={css.detailHeadingText}>
+            <h3 ref={headingRef} tabIndex={-1} className={css.detailName}>{plugin.name}</h3>
+            <p className={css.detailByline}>{t('row.publisher', { publisher: plugin.publisher })}{plugin.author && plugin.author !== plugin.publisher ? ` · ${t('row.author', { author: plugin.author })}` : ''} · {t('card.stars', { count: plugin.stars })}</p>
+          </div>
+          <CategoryChip category={plugin.category} t={t} />
+        </div>
+        <p className={css.detailPackage}>{plugin.packageName ?? plugin.repositoryFullName}{plugin.packageVersion ? ` · ${plugin.packageVersion}` : ''}</p>
+      </header>
       {plugin.description ? <section className={css.detailSection}><h4>{t('detail.about')}</h4><p>{plugin.description}</p></section> : null}
       <section className={css.detailSection}><h4>{t('detail.activity')}</h4><dl className={css.factList}><div><dt>{t('detail.stars.label')}</dt><dd>{t('card.stars', { count: plugin.stars })}</dd></div><div><dt>{t('detail.created')}</dt><dd>{formatTime(plugin.repositoryCreatedAt)}</dd></div><div><dt>{t('detail.pushed')}</dt><dd>{formatTime(plugin.lastCodePushAt)}</dd></div><div><dt>{t('detail.firstSeen')}</dt><dd>{formatTime(plugin.firstSeenAt)}</dd></div><div><dt>{t('detail.license')}</dt><dd>{plugin.license ?? t('detail.license.missing')}</dd></div></dl></section>
       <section className={css.detailSection}><h4>{t('detail.validation')}</h4><p>{t(`detail.validation.${plugin.validationStatus}` as PluginMarketplaceLocaleKey)}{plugin.validationMessage ? ` · ${plugin.validationMessage}` : ''}</p></section>
@@ -196,10 +253,88 @@ function PluginDetail({ plugin, profile, t, onBack, planOperation, executeOperat
   </div>
 }
 
-export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh, operationSnapshot, plan, execute, activateTab, t }: PluginMarketplaceSettingsTabProps): ReactNode {
+function installedCategory(item: MarketplaceInstalledListItem): MarketplaceCategory | null {
+  return item.plugin?.category ?? null
+}
+
+function sortInstalledItems(items: readonly MarketplaceInstalledListItem[], sort: InstalledSort): MarketplaceInstalledListItem[] {
+  const copy = [...items]
+  const byName = (left: MarketplaceInstalledListItem, right: MarketplaceInstalledListItem): number =>
+    (left.plugin?.name ?? left.state.packageName ?? '').localeCompare(right.plugin?.name ?? right.state.packageName ?? '', 'en')
+  if (sort === 'name') return copy.sort(byName)
+  if (sort === 'updated') {
+    return copy.sort((left, right) =>
+      Date.parse(right.plugin?.lastCodePushAt ?? '') - Date.parse(left.plugin?.lastCodePushAt ?? '') || byName(left, right))
+  }
+  return copy.sort((left, right) => Number(right.state.updateAvailable) - Number(left.state.updateAvailable) || byName(left, right))
+}
+
+function InstalledRow({ item, t, canInstall, onOpen, onUpdate, onRemove, onConfigure }: {
+  item: MarketplaceInstalledListItem
+  t: Translate
+  canInstall: boolean
+  onOpen: (id: string) => void
+  onUpdate: (id: string) => void
+  onRemove: (id: string) => void
+  onConfigure: () => void
+}): ReactNode {
+  const { state, plugin } = item
+  const name = plugin?.name ?? state.packageName ?? plugin?.repositoryFullName ?? state.repositoryId
+  const pending = isRestartPending(state.state)
+  return <li className={css.row}>
+    {plugin === null
+      ? <div className={css.rowStatic}><span className={css.rowMain}>
+        <span className={css.avatarFallback} aria-hidden="true">{name.trim().charAt(0).toUpperCase() || '?'}</span>
+        <span className={css.rowPrimary}>
+          <span className={css.rowHeading}><strong className={css.rowTitle}>{name}</strong></span>
+          <span className={css.rowMeta}>{state.installedVersion !== null ? <span>{t('installed.version', { version: state.installedVersion })}</span> : null}</span>
+        </span>
+      </span></div>
+      : <button className={css.rowOpen} type="button" onClick={() => { onOpen(state.repositoryId) }}><span className={css.rowMain}>
+        <PluginAvatar publisher={plugin.publisher} name={name} />
+        <span className={css.rowPrimary}>
+          <span className={css.rowHeading}>
+            <strong className={css.rowTitle} title={name}>{name}</strong>
+            <CategoryChip category={plugin.category} t={t} />
+            {state.updateAvailable ? <span className={css.updateBadge}>{t('installed.updateAvailable')}</span> : null}
+          </span>
+          <span className={css.rowPeople}>{t('row.publisher', { publisher: plugin.publisher })} · {t('card.stars', { count: plugin.stars })}</span>
+          <span className={css.rowMeta}>
+            {state.installedVersion !== null ? <span>{t('installed.version', { version: state.installedVersion })}</span> : null}
+            <span>{t('card.pushed', { time: formatTime(plugin.lastCodePushAt) })}</span>
+          </span>
+        </span>
+      </span></button>}
+    <div className={css.rowAction}>
+      <span className={css.stateBadge}>{t(STATE_KEYS[state.state])}</span>
+      {plugin !== null && state.updateAvailable && !pending ? <button type="button" className={css.primaryButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onUpdate(state.repositoryId) }}>{t('operation.update')}</button> : null}
+      {state.state === 'active' ? <button type="button" className={css.secondaryButton} onClick={onConfigure}>{t('operation.configure')}</button> : null}
+      {plugin !== null && !pending ? <button type="button" className={css.dangerButton} disabled={!canInstall} title={canInstall ? undefined : t('operation.capability.unavailableTitle')} onClick={() => { onRemove(state.repositoryId) }}>{t('operation.remove')}</button> : null}
+    </div>
+  </li>
+}
+
+function ExternalRow({ item, t }: { item: MarketplaceExternalPlugin; t: Translate }): ReactNode {
+  return <li className={css.row}>
+    <div className={css.rowStatic}><span className={css.rowMain}>
+      <span className={css.avatarFallback} aria-hidden="true">{item.packageName.trim().charAt(0).toUpperCase() || '?'}</span>
+      <span className={css.rowPrimary}>
+        <span className={css.rowHeading}><strong className={css.rowTitle} title={item.packageName}>{item.packageName}</strong></span>
+        <span className={css.rowMeta}><code className={css.rowPackage}>{item.installedSpec ?? ''}</code></span>
+      </span>
+    </span></div>
+    <div className={css.rowAction}>
+      <span className={css.stateBadge}>{t(item.activeAfterRestart ? 'operation.state.active' : 'operation.state.installed-inactive')}</span>
+    </div>
+  </li>
+}
+
+export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh, operationSnapshot, installed, plan, execute, activateTab, t }: PluginMarketplaceSettingsTabProps): ReactNode {
   const [model, setModel] = useState<MarketplaceListModel | null>(null)
   const [profile, setProfile] = useState<MarketplaceOperationSnapshot | null>(null)
+  const [view, setView] = useState<ViewKey>('discover')
   const [query, setQuery] = useState('')
+  const [category, setCategory] = useState<CategoryFilter>('all')
   const [filter, setFilter] = useState<InstallFilter>('all')
   const [sort, setSort] = useState<SortKey>('recommended')
   const [page, setPage] = useState(1)
@@ -209,9 +344,14 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detailState, setDetailState] = useState<DetailState>({ status: 'idle' })
   const [initialAction, setInitialAction] = useState<MarketplacePlanRequest['action'] | null>(null)
+  const [installedModel, setInstalledModel] = useState<MarketplaceInstalledResponse | null>(null)
+  const [installedError, setInstalledError] = useState(false)
+  const [installedDirty, setInstalledDirty] = useState(true)
+  const [installedCategoryFilter, setInstalledCategoryFilter] = useState<CategoryFilter>('all')
+  const [installedSort, setInstalledSort] = useState<InstalledSort>('updates')
   const bootstrapped = useRef(false)
   const rowNodes = useRef(new Map<string, HTMLButtonElement>())
-  const request = useMemo(() => requestFor(query, filter, sort, page), [query, filter, sort, page])
+  const request = useMemo(() => requestFor(query, category, filter, sort, page), [query, category, filter, sort, page])
 
   useEffect(() => {
     let current = true
@@ -233,6 +373,15 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   }, [bootstrap, list, refresh, request, loadAttempt])
 
   useEffect(() => {
+    if (view !== 'installed' || !installedDirty) return
+    let current = true
+    setInstalledError(false)
+    void installed().then((next) => { if (current) { setInstalledModel(next); setInstalledDirty(false) } })
+      .catch(() => { if (current) { setInstalledError(true); setInstalledDirty(false) } })
+    return () => { current = false }
+  }, [view, installed, installedDirty])
+
+  useEffect(() => {
     if (selectedId === null) { setDetailState({ status: 'idle' }); return }
     let current = true
     setDetailState({ status: 'loading' })
@@ -243,6 +392,7 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
     return () => { current = false }
   }, [detail, selectedId])
 
+  const onSnapshot = (snapshot: MarketplaceOperationSnapshot): void => { setProfile(snapshot); setInstalledDirty(true) }
   const onRefresh = (): void => {
     if (model === null) return
     setRefreshing(true); setError(null)
@@ -251,11 +401,12 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
       else setModel(previous => previous === null ? previous : { ...previous, source: update.source, stale: update.stale, lastSuccessfulFetchAt: update.lastSuccessfulFetchAt, error: update.error })
       setError(update.error?.message ?? null)
       return operationSnapshot()
-    }).then(setProfile).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) }).finally(() => { setRefreshing(false) })
+    }).then((snapshot) => { onSnapshot(snapshot) }).catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) }).finally(() => { setRefreshing(false) })
   }
   const rowRef = (id: string, node: HTMLButtonElement | null): void => { if (node) rowNodes.current.set(id, node); else rowNodes.current.delete(id) }
   const openPlugin = (id: string): void => { setInitialAction(null); setSelectedId(id) }
   const installPlugin = (id: string): void => { setInitialAction('install'); setSelectedId(id) }
+  const removePlugin = (id: string): void => { setInitialAction('remove'); setSelectedId(id) }
   const backToList = (): void => {
     const id = selectedId; setSelectedId(null); setInitialAction(null)
     if (id !== null) requestAnimationFrame(() => { const node = rowNodes.current.get(id); node?.focus(); node?.scrollIntoView?.({ block: 'nearest' }) })
@@ -268,7 +419,7 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   }
 
   if (selectedId !== null) {
-    if (detailState.status === 'ready') return <div className={css.section}><PluginDetail plugin={detailState.plugin} profile={profile} t={t} onBack={backToList} planOperation={plan} executeOperation={execute} onSnapshot={setProfile} activateTab={activateTab} initialAction={initialAction} onInitialActionConsumed={() => { setInitialAction(null) }} /></div>
+    if (detailState.status === 'ready') return <div className={css.section}><PluginDetail plugin={detailState.plugin} profile={profile} t={t} onBack={backToList} planOperation={plan} executeOperation={execute} onSnapshot={onSnapshot} activateTab={activateTab} initialAction={initialAction} onInitialActionConsumed={() => { setInitialAction(null) }} /></div>
     return <div className={css.section}><button className={css.backButton} type="button" onClick={backToList}><IconChevronLeftOutline14 aria-hidden="true" />{t('detail.back')}</button><p className={css.status} aria-live="polite">{detailState.status === 'loading' ? t('detail.loading') : t('detail.error')}</p></div>
   }
   if (model === null) {
@@ -280,18 +431,67 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   }
   const freshnessAt = model.lastSuccessfulFetchAt ?? model.generatedAt
   const canInstall = canChangeProfile(profile)
-  const filterCounts: Record<InstallFilter, number> = {
-    all: model.counts.all,
-    'one-click': model.counts.oneClick,
-    manual: model.counts.manual,
-  }
+  const profileStates = new Map((profile?.plugins ?? []).map(state => [state.repositoryId, state]))
+  const installedCount = (profile?.plugins.length ?? 0) + (profile?.external.length ?? 0)
+  const categoryChips: readonly { value: CategoryFilter; label: string; count: number }[] = [
+    { value: 'all', label: t('filter.all'), count: model.counts.all },
+    ...(['theme', 'ui', 'tool', 'memory'] as const)
+      .map(value => ({ value: value as CategoryFilter, label: t(CATEGORY_KEYS[value]), count: model.counts.categories[value] }))
+      .filter(chip => chip.count > 0),
+    ...(model.counts.uncategorized > 0 ? [{ value: 'uncategorized' as CategoryFilter, label: t('category.uncategorized'), count: model.counts.uncategorized }] : []),
+  ]
+
+  const installedItems = installedModel?.items ?? []
+  const installedChips: readonly { value: CategoryFilter; label: string; count: number }[] = [
+    { value: 'all', label: t('filter.all'), count: installedItems.length + (installedModel?.external.length ?? 0) },
+    ...(['theme', 'ui', 'tool', 'memory'] as const)
+      .map(value => ({ value: value as CategoryFilter, label: t(CATEGORY_KEYS[value]), count: installedItems.filter(item => installedCategory(item) === value).length }))
+      .filter(chip => chip.count > 0),
+  ]
+  const visibleInstalled = sortInstalledItems(
+    installedCategoryFilter === 'all' ? installedItems : installedItems.filter(item => installedCategory(item) === installedCategoryFilter),
+    installedSort,
+  )
+  const visibleExternal = installedModel !== null && (installedCategoryFilter === 'all' || installedCategoryFilter === 'uncategorized')
+    ? installedModel.external
+    : []
+  const anyRestartPending = (profile?.plugins ?? []).some(state => isRestartPending(state.state))
+
   return <div className={css.section} aria-busy={refreshing}>
-    <div className={css.statusBar}><span className={css.resultCount} role="status" aria-live="polite">{t('results.count', { count: model.total })}</span><span className={css.freshness}>{freshnessAt ? t(model.source === 'cache' ? 'status.cached' : 'status.updated', { time: formatTime(freshnessAt) }) : null}{model.stale ? ` · ${t('status.stale')}` : ''}{model.catalogStatus === 'unavailable' ? ` · ${t('status.offline')}` : ''}</span><button className={css.refreshButton} type="button" onClick={onRefresh} disabled={refreshing} aria-label={t('refresh')}><IconRefreshOutline16 size={14} aria-hidden="true" />{refreshing ? t('refreshing') : t('refresh')}</button></div>
-    {error ? <p className={css.inlineError} role="alert">{t('status.refreshError')}</p> : null}
-    {!canInstall ? <CapabilityNotice profile={profile} t={t} /> : null}
-    <label className={css.search}><IconSearchOutline16 aria-hidden="true" /><span className={css.visuallyHidden}>{t('search')}</span><input type="search" value={query} placeholder={t('search')} onChange={(event) => { setQuery(event.currentTarget.value); setPage(1) }} />{query.length > 0 ? <button className={css.clearSearch} type="button" aria-label={t('clearSearch')} onClick={() => { setQuery(''); setPage(1) }}><IconCloseOutline16 size={12} aria-hidden="true" /></button> : null}</label>
-    <div className={css.controls}><div className={css.filterGroup} role="group" aria-label={t('filter.installability')}><span className={css.filterLabel}>{t('filter.installability')}</span>{(['all', 'one-click', 'manual'] as const).map(value => <button key={value} type="button" className={css.filterButton} aria-pressed={filter === value} data-active={filter === value} onClick={() => { setFilter(value); setPage(1) }}>{t(`filter.${value}` as PluginMarketplaceLocaleKey)} <span className={css.filterCount}>{filterCounts[value]}</span></button>)}</div><label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={sort} onChange={(event) => { setSort(event.currentTarget.value as SortKey); setPage(1) }}><option value="recommended">{t('sort.recommended')}</option><option value="stars">{t('sort.stars')}</option><option value="updated">{t('sort.updated')}</option><option value="added">{t('sort.added')}</option></select></label></div>
-    {model.total === 0 ? <p className={css.status}>{query ? t('state.emptySearch') : t('state.empty')}</p> : <ul className={css.rows}>{model.items.map(plugin => <PluginRow key={plugin.id} plugin={plugin} t={t} onOpen={openPlugin} onInstall={installPlugin} rowRef={rowRef} canInstall={canInstall} />)}</ul>}
-    {model.pageCount > 1 ? <nav className={css.pagination} aria-label={t('pagination.label')}><button type="button" className={css.secondaryButton} disabled={model.page === 1} onClick={() => { setPage(model.page - 1) }}>{t('pagination.previous')}</button><span aria-live="polite">{t('pagination.page', { page: model.page, total: model.pageCount })}</span><button type="button" className={css.secondaryButton} disabled={model.page === model.pageCount} onClick={() => { setPage(model.page + 1) }}>{t('pagination.next')}</button></nav> : null}
+    <div className={css.viewTabs} role="group" aria-label={t('tab')}>
+      <button type="button" className={css.viewTab} aria-pressed={view === 'discover'} data-active={view === 'discover'} onClick={() => { setView('discover') }}>{t('view.discover')}</button>
+      <button type="button" className={css.viewTab} aria-pressed={view === 'installed'} data-active={view === 'installed'} onClick={() => { setView('installed') }}>{t('view.installed')} <span className={css.filterCount}>{installedCount}</span></button>
+    </div>
+    {view === 'discover' ? <>
+      <div className={css.statusBar}><span className={css.resultCount} role="status" aria-live="polite">{t('results.count', { count: model.total })}</span><span className={css.freshness}>{freshnessAt ? t(model.source === 'cache' ? 'status.cached' : 'status.updated', { time: formatTime(freshnessAt) }) : null}{model.stale ? ` · ${t('status.stale')}` : ''}{model.catalogStatus === 'unavailable' ? ` · ${t('status.offline')}` : ''}</span><button className={css.refreshButton} type="button" onClick={onRefresh} disabled={refreshing} aria-label={t('refresh')}><IconRefreshOutline16 size={14} aria-hidden="true" />{refreshing ? t('refreshing') : t('refresh')}</button></div>
+      {error ? <p className={css.inlineError} role="alert">{t('status.refreshError')}</p> : null}
+      {!canInstall ? <CapabilityNotice profile={profile} t={t} /> : null}
+      <label className={css.search}><IconSearchOutline16 aria-hidden="true" /><span className={css.visuallyHidden}>{t('search')}</span><input type="search" value={query} placeholder={t('search')} onChange={(event) => { setQuery(event.currentTarget.value); setPage(1) }} />{query.length > 0 ? <button className={css.clearSearch} type="button" aria-label={t('clearSearch')} onClick={() => { setQuery(''); setPage(1) }}><IconCloseOutline16 size={12} aria-hidden="true" /></button> : null}</label>
+      <div className={css.controls}>
+        <div className={css.filterGroup} role="group" aria-label={t('category.label')}>{categoryChips.map(chip => <button key={chip.value} type="button" className={css.filterButton} aria-pressed={category === chip.value} data-active={category === chip.value} onClick={() => { setCategory(chip.value); setPage(1) }}>{chip.label} <span className={css.filterCount}>{chip.count}</span></button>)}</div>
+        <label className={css.sortControl}><span className={css.filterLabel}>{t('filter.installability')}</span><select value={filter} onChange={(event) => { setFilter(event.currentTarget.value as InstallFilter); setPage(1) }}><option value="all">{t('filter.all')} ({model.counts.all})</option><option value="one-click">{t('filter.one-click')} ({model.counts.oneClick})</option><option value="manual">{t('filter.manual')} ({model.counts.manual})</option></select></label>
+        <label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={sort} onChange={(event) => { setSort(event.currentTarget.value as SortKey); setPage(1) }}><option value="recommended">{t('sort.recommended')}</option><option value="stars">{t('sort.stars')}</option><option value="updated">{t('sort.updated')}</option><option value="added">{t('sort.added')}</option></select></label>
+      </div>
+      {model.total === 0 ? <p className={css.status}>{query ? t('state.emptySearch') : t('state.empty')}</p> : <ul className={css.rows}>{model.items.map(plugin => <PluginRow key={plugin.id} plugin={plugin} state={profileStates.get(plugin.id)} t={t} onOpen={openPlugin} onInstall={installPlugin} rowRef={rowRef} canInstall={canInstall} />)}</ul>}
+      {model.pageCount > 1 ? <nav className={css.pagination} aria-label={t('pagination.label')}><button type="button" className={css.secondaryButton} disabled={model.page === 1} onClick={() => { setPage(model.page - 1) }}>{t('pagination.previous')}</button><span aria-live="polite">{t('pagination.page', { page: model.page, total: model.pageCount })}</span><button type="button" className={css.secondaryButton} disabled={model.page === model.pageCount} onClick={() => { setPage(model.page + 1) }}>{t('pagination.next')}</button></nav> : null}
+    </> : <>
+      {anyRestartPending ? <p className={css.restartNotice} role="status">{t('operation.restartPending')}</p> : null}
+      {!canInstall ? <CapabilityNotice profile={profile} t={t} /> : null}
+      {installedError ? <p className={css.inlineError} role="alert">{t('installed.error')}</p> : null}
+      {installedModel === null && !installedError ? <p className={css.status}>{t('installed.loading')}</p> : null}
+      {installedModel !== null ? <>
+        <div className={css.controls}>
+          <div className={css.filterGroup} role="group" aria-label={t('category.label')}>{installedChips.map(chip => <button key={chip.value} type="button" className={css.filterButton} aria-pressed={installedCategoryFilter === chip.value} data-active={installedCategoryFilter === chip.value} onClick={() => { setInstalledCategoryFilter(chip.value) }}>{chip.label} <span className={css.filterCount}>{chip.count}</span></button>)}</div>
+          <label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={installedSort} onChange={(event) => { setInstalledSort(event.currentTarget.value as InstalledSort) }}><option value="updates">{t('installed.sort.updates')}</option><option value="name">{t('installed.sort.name')}</option><option value="updated">{t('installed.sort.updated')}</option></select></label>
+        </div>
+        {visibleInstalled.length === 0 && visibleExternal.length === 0 ? <p className={css.status}>{t('installed.empty')}</p> : null}
+        {visibleInstalled.length > 0 ? <ul className={css.rows}>{visibleInstalled.map(item => <InstalledRow key={item.state.repositoryId} item={item} t={t} canInstall={canInstall} onOpen={openPlugin} onUpdate={installPlugin} onRemove={removePlugin} onConfigure={() => { activateTab('configurable') }} />)}</ul> : null}
+        {visibleExternal.length > 0 ? <>
+          <h4 className={css.externalHeading}>{t('installed.external')}</h4>
+          <p className={css.status}>{t('installed.externalHint')}</p>
+          <ul className={css.rows}>{visibleExternal.map(item => <ExternalRow key={item.packageName} item={item} t={t} />)}</ul>
+        </> : null}
+      </> : null}
+    </>}
   </div>
 }

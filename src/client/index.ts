@@ -8,6 +8,7 @@ import {
   bootstrapMarketplace,
   detailMarketplace,
   executeMarketplaceOperation,
+  installedMarketplace,
   listMarketplace,
   planMarketplaceOperation,
   readOperationSnapshot,
@@ -50,6 +51,7 @@ const remote: MarketplaceCatalogRemoteFace = {
   detail: request => apiCall('detail', request),
   refresh: request => apiCall('refresh', request),
   operationSnapshot: () => apiCall('operationSnapshot'),
+  installed: () => apiCall('installed'),
   plan: request => apiCall('plan', request),
   execute: request => apiCall('execute', request),
 }
@@ -72,6 +74,7 @@ export function apply(ctx: Context): void {
     detail: repositoryId => detailMarketplace(remote, repositoryId),
     refresh: (request, currentDigest) => refreshMarketplace(remote, request, currentDigest),
     operationSnapshot: () => readOperationSnapshot(remote),
+    installed: () => installedMarketplace(remote),
     plan: request => planMarketplaceOperation(remote, request),
     execute: planId => executeMarketplaceOperation(remote, planId),
     activateTab: activateSettingsPluginTab,

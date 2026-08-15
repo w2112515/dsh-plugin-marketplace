@@ -297,18 +297,47 @@ export class MarketplaceProfileOperations {
 
   /**
    * Return current installed/active state without starting a process.
-   * @returns Current profile state projected over catalog entries.
+   * @returns Current profile state projected over catalog entries, plus any
+   *   profile packages the catalog does not describe.
    */
   snapshot(): MarketplaceOperationSnapshot {
     const catalog = this.options.catalog()
     const manifest = readProfileManifest('dsh marketplace', this.options.runtime.dir)
+    const catalogPackageNames = new Set(
+      catalog?.entries.flatMap(entry => entry.package.name === null ? [] : [entry.package.name]) ?? [],
+    )
+    const declared = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...manifestBundles(manifest),
+    ])
+    const external = [...declared]
+      .filter(name => !catalogPackageNames.has(name) && !name.startsWith('@deepseek-ai/'))
+      .sort((left, right) => left.localeCompare(right))
+      .map(name => ({
+        packageName: name,
+        installedSpec: manifest.dependencies?.[name] ?? null,
+        activeAtLaunch: this.options.runtime.bundlesAtLaunch.includes(name),
+        activeAfterRestart: manifestBundles(manifest).includes(name),
+      }))
+    // A profile holds one spec per package name, so same-name catalog duplicates
+    // collapse into one row; the entry whose immutable source matches wins.
+    const byPackage = new Map<string, MarketplaceProfilePluginState>()
+    for (const state of catalog?.entries
+      .map(entry => pluginState(this.options.runtime, manifest, entry))
+      .filter(state => state.state !== 'not-installed') ?? []) {
+      const key = state.packageName ?? state.repositoryId
+      const existing = byPackage.get(key)
+      if (existing === undefined
+        || (existing.installedSpec !== existing.catalogSpec && state.installedSpec === state.catalogSpec)) {
+        byPackage.set(key, state)
+      }
+    }
     return {
       profileName: this.options.runtime.profileName,
       busy: this.busy,
       capabilities: this.options.capabilities,
-      plugins: catalog?.entries
-        .map(entry => pluginState(this.options.runtime, manifest, entry))
-        .filter(state => state.state !== 'not-installed') ?? [],
+      plugins: [...byPackage.values()],
+      external,
     }
   }
 

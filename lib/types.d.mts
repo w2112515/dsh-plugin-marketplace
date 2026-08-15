@@ -86,6 +86,10 @@ interface MarketplaceCatalogView {
   readonly catalog: MarketplaceCatalogSnapshot | null;
   readonly error: MarketplaceCatalogError | null;
 }
+/** Coarse Host-owned taxonomy derived from declared topics, keywords, and names. */
+type MarketplaceCategory = 'theme' | 'ui' | 'tool' | 'memory';
+/** Category segment: one taxonomy slug, entries without a derivable category, or everything. */
+type MarketplaceCategoryFilter = MarketplaceCategory | 'uncategorized' | 'all';
 /** Installability segment selected by the Marketplace browser. */
 type MarketplaceInstallabilityFilter = 'all' | 'one-click-eligible' | 'manual';
 /** Stable user-facing ordering supported by the Host-owned catalog index. */
@@ -93,6 +97,7 @@ type MarketplaceSort = 'recommended' | 'stars' | 'recently-updated' | 'recently-
 /** Bounded Host-side Marketplace query. Page numbers are one-based. */
 interface MarketplaceListRequest {
   readonly query: string;
+  readonly category: MarketplaceCategoryFilter;
   readonly installability: MarketplaceInstallabilityFilter;
   readonly sort: MarketplaceSort;
   readonly page: number;
@@ -110,17 +115,21 @@ interface MarketplacePluginSummary {
   readonly description: string | null;
   readonly license: string | null;
   readonly stars: number;
+  readonly repositoryCreatedAt: string;
   readonly lastCodePushAt: string;
   readonly firstSeenAt: string;
+  readonly category: MarketplaceCategory | null;
   readonly installability: Exclude<MarketplaceInstallability, 'browse-only'>;
   readonly compatibility: MarketplaceCompatibility;
   readonly riskSignals: readonly MarketplaceRiskSignal[];
 }
-/** Counts are calculated before the installability segment is applied. */
+/** Counts are calculated before the installability and category segments are applied. */
 interface MarketplaceListCounts {
   readonly all: number;
   readonly oneClick: number;
   readonly manual: number;
+  readonly categories: Readonly<Record<MarketplaceCategory, number>>;
+  readonly uncategorized: number;
 }
 /** One bounded catalog page and the freshness facts that qualify it. */
 interface MarketplaceListResponse {
@@ -178,12 +187,33 @@ interface MarketplaceProfilePluginState {
   readonly catalogSpec: string;
   readonly updateAvailable: boolean;
 }
+/** Profile package that no catalog entry describes; manageable only outside the Marketplace. */
+interface MarketplaceExternalPlugin {
+  readonly packageName: string;
+  readonly installedSpec: string | null;
+  readonly activeAtLaunch: boolean;
+  readonly activeAfterRestart: boolean;
+}
 /** Sparse snapshot of installed or restart-pending catalog packages in the active Web profile. */
 interface MarketplaceOperationSnapshot {
   readonly profileName: string;
   readonly busy: boolean;
   readonly capabilities: MarketplaceOperationCapabilities;
   readonly plugins: readonly MarketplaceProfilePluginState[];
+  readonly external: readonly MarketplaceExternalPlugin[];
+}
+/** One installed catalog package joined with its summary for the management view. */
+interface MarketplaceInstalledListItem {
+  readonly state: MarketplaceProfilePluginState;
+  readonly plugin: MarketplacePluginSummary | null;
+}
+/** Complete installed inventory of the current profile; bounded by profile size, never paged. */
+interface MarketplaceInstalledResponse {
+  readonly profileName: string;
+  readonly busy: boolean;
+  readonly capabilities: MarketplaceOperationCapabilities;
+  readonly items: readonly MarketplaceInstalledListItem[];
+  readonly external: readonly MarketplaceExternalPlugin[];
 }
 /** User-selected operation before Host-side qualification. */
 interface MarketplacePlanRequest {
@@ -227,5 +257,5 @@ interface MarketplaceOperationResult {
   readonly snapshot: MarketplaceOperationSnapshot;
 }
 //#endregion
-export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
+export { MarketplaceBootstrapResponse, MarketplaceCatalogEntry, MarketplaceCatalogError, MarketplaceCatalogErrorCode, MarketplaceCatalogIntegrity, MarketplaceCatalogSnapshot, MarketplaceCatalogSummary, MarketplaceCatalogView, MarketplaceCategory, MarketplaceCategoryFilter, MarketplaceCompatibility, MarketplaceExecuteRequest, MarketplaceExternalPlugin, MarketplaceInstallability, MarketplaceInstallabilityFilter, MarketplaceInstalledListItem, MarketplaceInstalledResponse, MarketplaceListCounts, MarketplaceListRequest, MarketplaceListResponse, MarketplaceOperationCapabilities, MarketplaceOperationCode, MarketplaceOperationPlan, MarketplaceOperationResult, MarketplaceOperationSnapshot, MarketplacePlanBlockCode, MarketplacePlanId, MarketplacePlanRequest, MarketplacePlanWarning, MarketplacePluginDetailResponse, MarketplacePluginSummary, MarketplaceProfilePluginState, MarketplaceRefreshResponse, MarketplaceRiskSignal, MarketplaceSort, MarketplaceValidationCode, MarketplaceValidationStatus };
 //# sourceMappingURL=types.d.mts.map

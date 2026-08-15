@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { detailMarketplaceEntry, queryMarketplaceCatalog } from '../src/catalog-query.ts'
-import type { MarketplaceCatalogEntry, MarketplaceCatalogView, MarketplaceListRequest } from '../src/types.ts'
+import { deriveMarketplaceCategory, detailMarketplaceEntry, installedMarketplacePlugins, queryMarketplaceCatalog } from '../src/catalog-query.ts'
+import type { MarketplaceCatalogEntry, MarketplaceCatalogView, MarketplaceListRequest, MarketplaceOperationSnapshot } from '../src/types.ts'
 import { catalogFixture } from './fixture.ts'
 
 const defaultRequest: MarketplaceListRequest = {
   query: '',
+  category: 'all',
   installability: 'all',
   sort: 'recommended',
   page: 1,
@@ -48,7 +49,9 @@ describe('catalog query', () => {
       installability: 'browse-only',
     })
     const result = queryMarketplaceCatalog(view([...valid, invalid, archived]), defaultRequest)
-    expect(result.counts).toEqual({ all: 53, oneClick: 53, manual: 0 })
+    expect(result.counts.all).toBe(53)
+    expect(result.counts.oneClick).toBe(53)
+    expect(result.counts.manual).toBe(0)
     expect(result.total).toBe(53)
     expect(result.pageCount).toBe(2)
     expect(result.items).toHaveLength(50)
@@ -99,5 +102,56 @@ describe('catalog query', () => {
       entry: { repositoryId: '1' }, state: { state: 'active' },
     })
     expect(detailMarketplaceEntry(view([admitted, rejected]), '2', states)).toEqual({ entry: null, state: null })
+  })
+
+  it('derives categories from declared topics first, then conservative tokens, else null', () => {
+    expect(deriveMarketplaceCategory(entry(1, { topics: ['dsh-plugin', 'dsh-category-theme'] }))).toBe('theme')
+    expect(deriveMarketplaceCategory(entry(2, { topics: ['dsh-plugin', 'dsh-category-unknown'] }))).toBeNull()
+    expect(deriveMarketplaceCategory(entry(3, { topics: ['dsh-plugin', 'vector-store'] }))).toBe('memory')
+    expect(deriveMarketplaceCategory(entry(4, { repository: { ...entry(4).repository, fullName: 'acme/dsh-tui' } }))).toBe('ui')
+    expect(deriveMarketplaceCategory(entry(5, { keywords: ['ocr'] }))).toBe('tool')
+    // Priority beats fallback ambiguity; declaration beats priority.
+    expect(deriveMarketplaceCategory(entry(6, { topics: ['dsh-plugin'], keywords: ['theme', 'memory'] }))).toBe('theme')
+    expect(deriveMarketplaceCategory(entry(7, { topics: ['dsh-category-memory'], keywords: ['theme'] }))).toBe('memory')
+    expect(deriveMarketplaceCategory(entry(8))).toBeNull()
+  })
+
+  it('filters by category and reports per-category counts before the segment', () => {
+    const theme = entry(1, { topics: ['dsh-plugin', 'dsh-category-theme'] })
+    const ui = entry(2, { repository: { ...entry(2).repository, fullName: 'acme/dsh-web-ui' } })
+    const plain = entry(3)
+    const catalogView = view([theme, ui, plain])
+    const result = queryMarketplaceCatalog(catalogView, defaultRequest)
+    expect(result.counts.categories).toEqual({ theme: 1, memory: 0, ui: 1, tool: 0 })
+    expect(result.counts.uncategorized).toBe(1)
+    expect(result.items[0]?.repositoryCreatedAt).toBe('2026-07-01T00:00:00.000Z')
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, category: 'theme' }).items.map(item => item.repositoryId)).toEqual(['1'])
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, category: 'uncategorized' }).items.map(item => item.repositoryId)).toEqual(['3'])
+  })
+
+  it('joins the installed snapshot with admitted summaries and keeps external packages', () => {
+    const admitted = entry(1, { topics: ['dsh-plugin', 'dsh-category-theme'] })
+    const rejected = entry(2, { validation: { status: 'invalid', code: 'patch-invalid', message: 'bad' } })
+    const snapshot: MarketplaceOperationSnapshot = {
+      profileName: 'web',
+      busy: false,
+      capabilities: { packageManager: 'pnpm', profileWritable: true, profileName: 'web', message: null },
+      plugins: [
+        {
+          repositoryId: '1', packageName: admitted.package.name, state: 'active',
+          installedVersion: '1.0.0', installedSpec: admitted.source.ref, catalogSpec: admitted.source.ref, updateAvailable: false,
+        },
+        {
+          repositoryId: '2', packageName: rejected.package.name, state: 'pending-removal',
+          installedVersion: '1.0.0', installedSpec: rejected.source.ref, catalogSpec: rejected.source.ref, updateAvailable: false,
+        },
+      ],
+      external: [{ packageName: '@elsewhere/tool', installedSpec: '1.2.3', activeAtLaunch: true, activeAfterRestart: true }],
+    }
+    const result = installedMarketplacePlugins(view([admitted, rejected]), snapshot)
+    expect(result.items).toHaveLength(2)
+    expect(result.items[0]?.plugin?.category).toBe('theme')
+    expect(result.items[1]?.plugin).toBeNull()
+    expect(result.external[0]?.packageName).toBe('@elsewhere/tool')
   })
 })

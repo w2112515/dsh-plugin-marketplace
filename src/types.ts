@@ -119,6 +119,12 @@ export interface MarketplaceCatalogView {
   readonly error: MarketplaceCatalogError | null
 }
 
+/** Coarse Host-owned taxonomy derived from declared topics, keywords, and names. */
+export type MarketplaceCategory = 'theme' | 'ui' | 'tool' | 'memory'
+
+/** Category segment: one taxonomy slug, entries without a derivable category, or everything. */
+export type MarketplaceCategoryFilter = MarketplaceCategory | 'uncategorized' | 'all'
+
 /** Installability segment selected by the Marketplace browser. */
 export type MarketplaceInstallabilityFilter = 'all' | 'one-click-eligible' | 'manual'
 
@@ -128,6 +134,7 @@ export type MarketplaceSort = 'recommended' | 'stars' | 'recently-updated' | 're
 /** Bounded Host-side Marketplace query. Page numbers are one-based. */
 export interface MarketplaceListRequest {
   readonly query: string
+  readonly category: MarketplaceCategoryFilter
   readonly installability: MarketplaceInstallabilityFilter
   readonly sort: MarketplaceSort
   readonly page: number
@@ -146,18 +153,22 @@ export interface MarketplacePluginSummary {
   readonly description: string | null
   readonly license: string | null
   readonly stars: number
+  readonly repositoryCreatedAt: string
   readonly lastCodePushAt: string
   readonly firstSeenAt: string
+  readonly category: MarketplaceCategory | null
   readonly installability: Exclude<MarketplaceInstallability, 'browse-only'>
   readonly compatibility: MarketplaceCompatibility
   readonly riskSignals: readonly MarketplaceRiskSignal[]
 }
 
-/** Counts are calculated before the installability segment is applied. */
+/** Counts are calculated before the installability and category segments are applied. */
 export interface MarketplaceListCounts {
   readonly all: number
   readonly oneClick: number
   readonly manual: number
+  readonly categories: Readonly<Record<MarketplaceCategory, number>>
+  readonly uncategorized: number
 }
 
 /** One bounded catalog page and the freshness facts that qualify it. */
@@ -227,12 +238,36 @@ export interface MarketplaceProfilePluginState {
   readonly updateAvailable: boolean
 }
 
+/** Profile package that no catalog entry describes; manageable only outside the Marketplace. */
+export interface MarketplaceExternalPlugin {
+  readonly packageName: string
+  readonly installedSpec: string | null
+  readonly activeAtLaunch: boolean
+  readonly activeAfterRestart: boolean
+}
+
 /** Sparse snapshot of installed or restart-pending catalog packages in the active Web profile. */
 export interface MarketplaceOperationSnapshot {
   readonly profileName: string
   readonly busy: boolean
   readonly capabilities: MarketplaceOperationCapabilities
   readonly plugins: readonly MarketplaceProfilePluginState[]
+  readonly external: readonly MarketplaceExternalPlugin[]
+}
+
+/** One installed catalog package joined with its summary for the management view. */
+export interface MarketplaceInstalledListItem {
+  readonly state: MarketplaceProfilePluginState
+  readonly plugin: MarketplacePluginSummary | null
+}
+
+/** Complete installed inventory of the current profile; bounded by profile size, never paged. */
+export interface MarketplaceInstalledResponse {
+  readonly profileName: string
+  readonly busy: boolean
+  readonly capabilities: MarketplaceOperationCapabilities
+  readonly items: readonly MarketplaceInstalledListItem[]
+  readonly external: readonly MarketplaceExternalPlugin[]
 }
 
 /** User-selected operation before Host-side qualification. */

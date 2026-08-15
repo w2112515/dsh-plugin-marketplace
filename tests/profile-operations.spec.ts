@@ -264,11 +264,53 @@ describe('MarketplaceProfileOperations', () => {
         return { exitCode: 0, unavailable: false }
       },
     })
-    expect(operations.snapshot()).toMatchObject({ capabilities: unavailable, plugins: [] })
+    expect(operations.snapshot()).toMatchObject({ capabilities: unavailable, plugins: [], external: [] })
     expect(operations.plan({ repositoryId: '123456', action: 'install' })).toMatchObject({
       status: 'blocked', blockCode: 'package-manager-unavailable',
     })
     expect(calls).toBe(0)
+  })
+
+  it('reports profile packages the catalog does not describe as read-only external entries', async () => {
+    const runtime = await stageProfile()
+    const manifest = await readManifest(runtime.dir)
+    manifest.dependencies['@elsewhere/tool'] = '1.2.3'
+    manifest.dsh.profile.bundles.push('@elsewhere/tool', '@deepseek-ai/dsh-web-app')
+    await writeFile(join(runtime.dir, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)
+    const operations = new MarketplaceProfileOperations({
+      runtime: { ...runtime, dependenciesAtLaunch: { '@elsewhere/tool': '1.2.3' }, bundlesAtLaunch: ['@elsewhere/tool'] },
+      catalog: () => catalogFixture(),
+      capabilities,
+      runPnpm: async () => { throw new Error('must not run') },
+    })
+    const snapshot = operations.snapshot()
+    expect(snapshot.plugins).toEqual([])
+    expect(snapshot.external).toEqual([{
+      packageName: '@elsewhere/tool',
+      installedSpec: '1.2.3',
+      activeAtLaunch: true,
+      activeAfterRestart: true,
+    }])
+  })
+
+  it('collapses same-name catalog duplicates to the entry matching the installed source', async () => {
+    const runtime = await stageActiveProfile(catalogFixture())
+    const duplicate = {
+      ...catalogFixture().entries[0]!,
+      repositoryId: '999999',
+      repository: { ...catalogFixture().entries[0]!.repository, fullName: 'copy/dsh-weather-bundle' },
+      source: { ...catalogFixture().entries[0]!.source, ref: 'git+https://github.com/copy/dsh-weather-bundle.git#ffffffffffffffffffffffffffffffffffffffff' },
+    }
+    const catalog = catalogFixture({ entries: [...catalogFixture().entries, duplicate], summary: { entryCount: 2, invalidEntryCount: 0 } })
+    const operations = new MarketplaceProfileOperations({
+      runtime,
+      catalog: () => catalog,
+      capabilities,
+      runPnpm: async () => { throw new Error('must not run') },
+    })
+    const snapshot = operations.snapshot()
+    expect(snapshot.plugins).toHaveLength(1)
+    expect(snapshot.plugins[0]?.repositoryId).toBe('123456')
   })
 
   it('blocks an unwritable profile before writing', async () => {

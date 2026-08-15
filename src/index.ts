@@ -8,7 +8,7 @@ import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import z from '@deepseek-ai/schemastery'
 import { MarketplaceCatalogClient } from './catalog-client.ts'
-import { detailMarketplaceEntry, queryMarketplaceCatalog } from './catalog-query.ts'
+import { detailMarketplaceEntry, installedMarketplacePlugins, queryMarketplaceCatalog } from './catalog-query.ts'
 import {
   detectMarketplaceOperationCapabilities,
   MarketplaceProfileOperations,
@@ -124,10 +124,12 @@ function executeRequest(value: unknown): MarketplaceExecuteRequest {
 }
 
 const INSTALLABILITY_FILTERS = new Set(['all', 'one-click-eligible', 'manual'])
+const CATEGORY_FILTERS = new Set(['all', 'theme', 'ui', 'tool', 'memory', 'uncategorized'])
 const SORTS = new Set(['recommended', 'stars', 'recently-updated', 'recently-added'])
 
 function listRequest(value: unknown): MarketplaceListRequest {
   if (!isRecord(value) || typeof value.query !== 'string' || value.query.length > 256
+    || typeof value.category !== 'string' || !CATEGORY_FILTERS.has(value.category)
     || typeof value.installability !== 'string' || !INSTALLABILITY_FILTERS.has(value.installability)
     || typeof value.sort !== 'string' || !SORTS.has(value.sort)
     || typeof value.page !== 'number' || !Number.isSafeInteger(value.page) || value.page < 1) {
@@ -229,6 +231,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
             break
           }
           case 'operationSnapshot': value = operations.snapshot(); break
+          case 'installed': value = installedMarketplacePlugins(catalog.view(), operations.snapshot()); break
           case 'plan': value = operations.plan(planRequest(body.params)); break
           case 'execute': value = await operations.execute(executeRequest(body.params)); break
           default: throw new ApiFailure(404, 'method-unknown', 'Unknown marketplace API method.')
