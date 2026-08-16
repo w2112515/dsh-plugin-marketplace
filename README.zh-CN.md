@@ -20,13 +20,19 @@ DSH 插件市场是一个**仓外可安装的 DSH bundle**，为 DeepSeek Harnes
 
 ## 安装到本机 DSH
 
-从 GitHub 安装必须固定 commit（本仓库提交了构建后的 `lib/`，因此不会在你的机器上执行 `prepare`）：
+从 npm 安装：
+
+```powershell
+dsh plugin --profile web add @w2112515/dsh-plugin-marketplace
+```
+
+也可以从 GitHub 安装并固定 commit（本仓库提交了构建后的 `lib/`，因此不会在你的机器上执行 `prepare`）：
 
 ```powershell
 dsh plugin --profile web add github:w2112515/dsh-plugin-marketplace#<40位commit>
 ```
 
-普通用户不需要 GitHub Token。自动安装需要 Host 能调用 pnpm 11（插件也会自动尝试 `corepack pnpm`）；需确认脚本的安装需要 pnpm ≥ 11.7。两者都不可用时 WebUI 保持浏览能力并给出恢复提示，不会显示假成功。发布 npm 后可改为 `dsh plugin --profile web add dsh-plugin-marketplace`。卸载：`dsh plugin --profile web remove dsh-plugin-marketplace`。
+普通用户不需要 GitHub Token。自动安装需要 Host 能调用 pnpm 11（插件也会自动尝试 `corepack pnpm`）；需确认脚本的安装需要 pnpm ≥ 11.7。两者都不可用时 WebUI 保持浏览能力并给出恢复提示，不会显示假成功。卸载：`dsh plugin --profile web remove @w2112515/dsh-plugin-marketplace`。
 
 默认目录由本仓库的 GitHub Pages 提供。开发时可用环境变量临时覆盖：
 

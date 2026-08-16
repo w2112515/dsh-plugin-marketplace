@@ -20,13 +20,19 @@ At a glance:
 
 ## Install into your DSH
 
-Git installs must pin a commit (this repository commits its built `lib/`, so no `prepare` runs on your machine):
+From npm:
+
+```powershell
+dsh plugin --profile web add @w2112515/dsh-plugin-marketplace
+```
+
+Or pin an immutable commit from GitHub (this repository commits its built `lib/`, so no `prepare` runs on your machine):
 
 ```powershell
 dsh plugin --profile web add github:w2112515/dsh-plugin-marketplace#<40-char-commit>
 ```
 
-Regular users need no GitHub token. Automatic installs require the Host to run `pnpm` 11 (the plugin also tries `corepack pnpm`); consent-gated script installs require pnpm ≥ 11.7. When no package manager exists, the WebUI keeps browsing and shows a recovery hint instead of a fake success. Once published to npm: `dsh plugin --profile web add dsh-plugin-marketplace`. Uninstall: `dsh plugin --profile web remove dsh-plugin-marketplace`.
+Regular users need no GitHub token. Automatic installs require the Host to run `pnpm` 11 (the plugin also tries `corepack pnpm`); consent-gated script installs require pnpm ≥ 11.7. When no package manager exists, the WebUI keeps browsing and shows a recovery hint instead of a fake success. Uninstall: `dsh plugin --profile web remove @w2112515/dsh-plugin-marketplace`.
 
 The default catalog is served from this repository's GitHub Pages. During development you can override it:
 
