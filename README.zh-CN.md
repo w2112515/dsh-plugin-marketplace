@@ -74,6 +74,8 @@ dsh web
 - **整合包不放权**：需确认脚本的插件仍需进入其详情页单独审阅同意；手动项保持手动。
 - **整合包永不按 star 排序。** star 排序只会奖励「把最高星插件塞进包里」的行为——那是换了皮的 star 榜单，不是策展。排序为编辑精选优先（由市场维护者审阅一致性与诚实度后列入 `FEATURED_MARKETPLACE_PACKS`），其余按新鲜度。策展宁缺毋滥：能力空缺就空着，不用未经验证的插件凑数。
 
+用 Codex、Claude Code 或 Cursor 写整合包时，安装便携 Skill [`dsh-marketplace-publish`](https://github.com/w2112515/dsh-marketplace-publish/tree/main/skills/dsh-marketplace-publish)。收录规则仍以本页和扫描器为准。
+
 ![整合方案视图：精选的 DSH 分类星数榜首整合包及其前置展示的安装构成](docs/screenshots/packs.png)
 
 ![整合包详情页：逐项安装状态与诚实的 3/9 可自动安装计数，不代替用户做任何同意](docs/screenshots/pack-detail.png)
@@ -112,6 +114,8 @@ dsh --profile web --dump-config   # 验证 bundle 层
 可被收录的条件：仓库携带 `dsh-plugin` topic、`package.json` 声明 `dsh.bundle.patch`、且 `cordis.patch.yml` 有效。可选 `dsh-category-theme|memory|usage|skill|security|channel|ui|tool|provider` topic 显式决定目录分类。
 
 **获得自动安装资格**：让你的 bundle 要加载的文件存在于固定 commit 的 git tree 中——把构建产物（如 `lib/`）提交进仓库（本仓库即如此）。若刻意不提交构建产物、由 `prepare`/`install` 脚本生成，用户会在安装前逐字看到脚本并可选择按次同意；同意范围永不超出被审阅的 commit。
+
+用 Codex、Claude Code 或 Cursor 上架插件时，安装同一份 [`dsh-marketplace-publish`](https://github.com/w2112515/dsh-marketplace-publish/tree/main/skills/dsh-marketplace-publish)。它不替代上面的规则。
 
 ## 配置
 
@@ -166,4 +170,5 @@ pnpm pack --dry-run
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)——宿主项目
 - [DSH 分类星数榜首](https://github.com/w2112515/dsh-essentials-pack)——按机械规则收录各分类 star 数最高条目的整合包（标注快照日期）
+- [DSH Marketplace Publish](https://github.com/w2112515/dsh-marketplace-publish)——上架插件与创建整合包的便携 Agent Skill
 - [linux.do](https://linux.do)——新的理想型社区（友链）

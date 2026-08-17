@@ -74,6 +74,8 @@ A pack is a curated list of plugin repositories — nothing more. A repository b
 - **Packs grant no privilege**: script-gated items still require their own per-plugin review and consent; manual items stay manual.
 - **Packs are never ranked by stars.** Star ranking would reward stuffing a pack with the most-starred plugins — a star-sorted category view in disguise, not curation. Order is editorial first (packs reviewed by the marketplace maintainers for coherence and honesty, listed in `FEATURED_MARKETPLACE_PACKS`), then freshness. Curation follows 宁缺毋滥 (*quality over quantity*): a missing capability slot stays empty rather than being filled with an unproven plugin.
 
+If you use Codex, Claude Code, or Cursor to author a pack, install the portable [`dsh-marketplace-publish`](https://github.com/w2112515/dsh-marketplace-publish/tree/main/skills/dsh-marketplace-publish) Skill. This page and the scanner remain the admission rules.
+
 ![Solution packs view with the featured DSH Category Star Leaders pack and its disclosed install composition](docs/screenshots/packs.png)
 
 ![Pack detail page: per-item install status with an honest 3-of-9 automatic count and no consent taken on your behalf](docs/screenshots/pack-detail.png)
@@ -112,6 +114,8 @@ The marketplace is **read-only against a static catalog and never phones home**:
 To be discoverable, your repository needs the `dsh-plugin` topic, a `package.json` declaring `dsh.bundle.patch`, and a valid `cordis.patch.yml`. An optional `dsh-category-theme|memory|usage|skill|security|channel|ui|tool|provider` topic sets your catalog category explicitly.
 
 **To qualify for automatic install**, the files your bundle loads must exist in the git tree at the pinned commit — commit your built output (e.g. `lib/`), the way this repository does. If built output is intentionally not committed and your `prepare`/`install` scripts produce it, users will see your scripts verbatim and can consent to run them per install; the consent never extends beyond the reviewed commit.
+
+If you use Codex, Claude Code, or Cursor to list a plugin, install the same [`dsh-marketplace-publish`](https://github.com/w2112515/dsh-marketplace-publish/tree/main/skills/dsh-marketplace-publish) Skill. It does not replace the rules above.
 
 ## Configuration
 
@@ -166,4 +170,5 @@ pnpm pack --dry-run
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — the host project
 - [DSH Category Star Leaders](https://github.com/w2112515/dsh-essentials-pack) — a solution pack listing each category's highest-starred catalog entry (mechanical, snapshot-dated)
+- [DSH Marketplace Publish](https://github.com/w2112515/dsh-marketplace-publish) — portable Agent Skill for listing plugins and creating packs
 - [linux.do](https://linux.do) — 新的理想型社区（友链）
