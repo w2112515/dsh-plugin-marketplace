@@ -1,6 +1,6 @@
 - insert:
     - id: plugin-marketplace
-      name: dsh-plugin-marketplace
+      name: '@w2112515/dsh-plugin-marketplace'
       config:
         catalogUrl: !!js process.env.DSH_PLUGIN_MARKETPLACE_CATALOG_URL ?? 'https://w2112515.github.io/dsh-plugin-marketplace/plugin-marketplace/catalog-v1.json'
         maxAgeMs: 172800000
