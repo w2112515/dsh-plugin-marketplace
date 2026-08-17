@@ -127,7 +127,7 @@ The bundle's patch row id is `plugin-marketplace`. Override the full config in `
     catalogUrl: https://w2112515.github.io/dsh-plugin-marketplace/plugin-marketplace/catalog-v1.json
     maxAgeMs: 172800000
     timeoutMs: 15000
-    maxBytes: 5000000
+    maxBytes: 15000000
 ```
 
 ## Repository layout

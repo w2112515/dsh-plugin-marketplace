@@ -127,7 +127,7 @@ bundle 插入的 row id 是 `plugin-marketplace`。可在 `$DSH_HOME/profiles/we
     catalogUrl: https://w2112515.github.io/dsh-plugin-marketplace/plugin-marketplace/catalog-v1.json
     maxAgeMs: 172800000
     timeoutMs: 15000
-    maxBytes: 5000000
+    maxBytes: 15000000
 ```
 
 ## 仓库结构

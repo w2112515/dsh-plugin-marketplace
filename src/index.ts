@@ -46,7 +46,7 @@ export const Config: z<Config> = z.object({
   catalogUrl: z.string().default(''),
   maxAgeMs: z.natural().min(1).default(48 * 60 * 60 * 1000),
   timeoutMs: z.natural().min(1).default(15_000),
-  maxBytes: z.natural().min(1).default(5_000_000),
+  maxBytes: z.natural().min(1).default(15_000_000),
   agentTools: z.boolean().default(true),
 })
 
