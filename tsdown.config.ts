@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { basename, relative, resolve } from 'node:path'
 import { transform } from 'lightningcss'
 import { defineConfig, type UserConfig } from 'tsdown'
 
-const PACKAGE_ID = '@w2112515/dsh-plugin-marketplace'
+const PACKAGE_ID = createRequire(import.meta.url)('./package.json').name as string
 const CSS_PREFIX = '\0marketplace-css:'
 const CSS_SUFFIX = '.mjs'
 const CLIENT_EXTERNALS = [
