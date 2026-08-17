@@ -170,5 +170,6 @@ pnpm pack --dry-run
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — the host project
 - [DSH Category Star Leaders](https://github.com/w2112515/dsh-essentials-pack) — a solution pack listing each category's highest-starred catalog entry (mechanical, snapshot-dated)
+- [DSH Remote](https://github.com/w2112515/dsh-remote-pack) — a solution pack for pairing an Android phone to the Host over LAN (`dsh-remote-host` + APK from `dsh-remote-android`)
 - [DSH Marketplace Publish](https://github.com/w2112515/dsh-marketplace-publish) — portable Agent Skill for listing plugins and creating packs
 - [linux.do](https://linux.do) — 新的理想型社区（友链）
