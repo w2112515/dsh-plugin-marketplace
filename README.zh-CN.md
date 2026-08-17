@@ -170,6 +170,5 @@ pnpm pack --dry-run
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)——宿主项目
 - [DSH 分类星数榜首](https://github.com/w2112515/dsh-essentials-pack)——按机械规则收录各分类 star 数最高条目的整合包（标注快照日期）
-- [DSH Remote](https://github.com/w2112515/dsh-remote-pack)——局域网把 Android 手机接到 Host 的整合包（`dsh-remote-host` + `dsh-remote-android` 的 APK）
 - [DSH Marketplace Publish](https://github.com/w2112515/dsh-marketplace-publish)——上架插件与创建整合包的便携 Agent Skill
 - [linux.do](https://linux.do)——新的理想型社区（友链）
