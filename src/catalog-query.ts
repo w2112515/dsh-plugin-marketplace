@@ -351,6 +351,7 @@ export function isPublicMarketplacePack(pack: MarketplacePackEntry): boolean {
  */
 export const FEATURED_MARKETPLACE_PACKS: readonly string[] = [
   'w2112515/dsh-essentials-pack',
+  'w2112515/dsh-remote-pack',
 ]
 
 /** Catalog-truth status of one pack item; the profile only ever adds 'installed'. */
