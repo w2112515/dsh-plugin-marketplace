@@ -14,6 +14,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import { MARKETPLACE_CATEGORY_PRIORITY } from './category-vocabulary.ts'
 import { detailMarketplaceEntry, queryMarketplaceCatalog } from './catalog-query.ts'
 import type { MarketplaceProfileOperations } from './profile-operations.ts'
 import type {
@@ -29,11 +30,11 @@ export interface MarketplaceAgentToolsDeps {
   readonly capabilities: MarketplaceOperationCapabilities
 }
 
-const SEARCH_LIMIT = 10
+const SEARCH_LIMIT = 20
 const GUIDE_MAX_CHARS = 2000
 const GUIDE_FETCH_TIMEOUT_MS = 10_000
 
-const CATEGORY_VALUES = ['theme', 'memory', 'usage', 'skill', 'security', 'channel', 'ui', 'tool', 'provider', 'uncategorized'] as const
+const CATEGORY_VALUES = [...MARKETPLACE_CATEGORY_PRIORITY, 'uncategorized'] as const
 const SORT_VALUES = ['recommended', 'stars', 'recently-updated', 'recently-added'] as const
 
 type SearchSort = (typeof SORT_VALUES)[number]

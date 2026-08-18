@@ -3,9 +3,9 @@
 import {
   MARKETPLACE_CATEGORY_PRIORITY,
   MARKETPLACE_CATEGORY_VOCABULARY,
-  marketplaceFieldMatchesWord,
   marketplaceQueryCategoryAlias,
   marketplaceQueryWords,
+  marketplaceWordMatcher,
 } from './category-vocabulary.ts'
 import type {
   MarketplaceCatalogEntry,
@@ -130,7 +130,12 @@ export function isPublicMarketplaceEntry(entry: MarketplaceCatalogEntry): boolea
     && (entry.installability === 'one-click-eligible' || entry.installability === 'manual')
 }
 
-function summary(entry: MarketplaceCatalogEntry, nowMs: number, issueUrl: string | null): MarketplacePluginSummary {
+function summary(
+  entry: MarketplaceCatalogEntry,
+  nowMs: number,
+  issueUrl: string | null,
+  category = deriveMarketplaceCategory(entry),
+): MarketplacePluginSummary {
   const separator = entry.repository.fullName.indexOf('/')
   return {
     repositoryId: entry.repositoryId,
@@ -147,7 +152,7 @@ function summary(entry: MarketplaceCatalogEntry, nowMs: number, issueUrl: string
     repositoryCreatedAt: entry.repositoryCreatedAt,
     lastCodePushAt: entry.lastCodePushAt,
     firstSeenAt: entry.firstSeenAt,
-    category: deriveMarketplaceCategory(entry),
+    category,
     installability: entry.installability as MarketplacePluginSummary['installability'],
     compatibility: entry.compatibility,
     riskSignals: entry.riskSignals,
@@ -164,10 +169,14 @@ function summary(entry: MarketplaceCatalogEntry, nowMs: number, issueUrl: string
   }
 }
 
-function relevance(entry: MarketplaceCatalogEntry, words: readonly string[]): number {
+function relevance(
+  entry: MarketplaceCatalogEntry,
+  category: MarketplaceCategory | 'uncategorized',
+  words: readonly string[],
+  matchers: readonly { readonly word: string; readonly alias: ReturnType<typeof marketplaceQueryCategoryAlias>; readonly match: (field: string) => boolean }[],
+): number {
   if (words.length === 0) return 0
   const publisher = entry.repository.fullName.split('/')[0] ?? ''
-  const category = deriveMarketplaceCategory(entry) ?? 'uncategorized'
   const fields: readonly [string, number][] = [
     [entry.package.name ?? '', 10],
     [entry.repository.fullName, 8],
@@ -177,18 +186,17 @@ function relevance(entry: MarketplaceCatalogEntry, words: readonly string[]): nu
     [entry.keywords.join(' '), 2],
   ]
   let score = 0
-  for (const word of words) {
+  for (const item of matchers) {
     let matched = false
-    const alias = marketplaceQueryCategoryAlias(word)
-    if (alias !== null && alias === category) {
+    if (item.alias !== null && item.alias === category) {
       score += 8
       matched = true
     }
     for (const [field, weight] of fields) {
-      if (field.toLocaleLowerCase() === word) {
+      if (field.toLocaleLowerCase() === item.word) {
         score += weight * 2
         matched = true
-      } else if (marketplaceFieldMatchesWord(field, word)) {
+      } else if (item.match(field)) {
         score += weight
         matched = true
       }
@@ -256,11 +264,20 @@ export function queryMarketplaceCatalog(
     packs: (view.catalog?.packs ?? []).filter(isPublicMarketplacePack).length,
   }
   const words = marketplaceQueryWords(request.query)
+  const matchers = words.map(word => ({
+    word,
+    alias: marketplaceQueryCategoryAlias(word),
+    match: marketplaceWordMatcher(word),
+  }))
   const selected = categorized
     .filter(item => request.category === 'all'
       || (request.category === 'uncategorized' ? item.category === null : item.category === request.category))
     .filter(item => request.installability === 'all' || item.entry.installability === request.installability)
-    .map(item => ({ entry: item.entry, relevance: relevance(item.entry, words) }))
+    .map(item => ({
+      entry: item.entry,
+      category: item.category,
+      relevance: relevance(item.entry, item.category ?? 'uncategorized', words, matchers),
+    }))
     .filter(item => item.relevance >= 0)
     .sort((left, right) => compareRanked(left, right, request, nowMs))
   const pageCount = selected.length === 0 ? 0 : Math.ceil(selected.length / MARKETPLACE_PAGE_SIZE)
@@ -277,7 +294,9 @@ export function queryMarketplaceCatalog(
     counts,
     page,
     pageCount,
-    items: selected.slice(offset, offset + MARKETPLACE_PAGE_SIZE).map(item => summary(item.entry, nowMs, view.catalog?.ratings?.issueUrl ?? null)),
+    items: selected.slice(offset, offset + MARKETPLACE_PAGE_SIZE).map(item => (
+      summary(item.entry, nowMs, view.catalog?.ratings?.issueUrl ?? null, item.category)
+    )),
     error: view.error,
   }
 }

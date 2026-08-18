@@ -97,14 +97,27 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }
 
-/** ASCII queries use word boundaries so `ui` does not hit `build`. CJK stays substring. */
-export function marketplaceFieldMatchesWord(field: string, word: string): boolean {
-  const normalized = field.toLocaleLowerCase()
-  if (normalized === word) return true
-  if (ASCII_WORD.test(word)) {
-    return new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(word)}(?:$|[^a-z0-9])`, 'u').test(normalized)
+const CJK_CHAR = /[\u3400-\u9fff]/u
+
+/** One compiled matcher per query word. ASCII uses word boundaries; a single CJK character is exact-only. */
+export function marketplaceWordMatcher(word: string): (field: string) => boolean {
+  const lowered = word.toLocaleLowerCase()
+  if ([...word].length === 1 && CJK_CHAR.test(word)) {
+    return (field) => field.toLocaleLowerCase() === lowered
   }
-  return normalized.includes(word)
+  if (ASCII_WORD.test(word)) {
+    const boundary = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(word)}(?:$|[^a-z0-9])`, 'u')
+    return (field) => {
+      const normalized = field.toLocaleLowerCase()
+      return normalized === lowered || boundary.test(normalized)
+    }
+  }
+  return (field) => field.toLocaleLowerCase().includes(lowered)
+}
+
+/** ASCII queries use word boundaries so `ui` does not hit `build`. CJK stays substring except single characters. */
+export function marketplaceFieldMatchesWord(field: string, word: string): boolean {
+  return marketplaceWordMatcher(word)(field)
 }
 
 function vocabularyAliases(item: MarketplaceCategoryVocabulary): readonly string[] {

@@ -29,7 +29,10 @@ describe('marketplace catalog v1', () => {
       entries: [fixture.entries[0]!, fixture.entries[0]!],
     })))).toThrow('duplicate')
 
-    expect(() => parseMarketplaceCatalogText(JSON.stringify({ ...fixture, surprise: true }))).toThrow('schema')
+    const extra = { ...fixture, surprise: true }
+    extra.integrity = { algorithm: 'sha256', digest: computeMarketplaceCatalogDigest(extra as never) }
+    expect(parseMarketplaceCatalogText(JSON.stringify(extra))).toMatchObject({ surprise: true })
+    expect(() => parseMarketplaceCatalogText(JSON.stringify({ ...fixture, surprise: true }))).toThrow('integrity')
   })
 
   it('keeps verifying pre-pack cached catalogs and normalizes the newer fields', () => {

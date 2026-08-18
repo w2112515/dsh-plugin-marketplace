@@ -15,14 +15,14 @@ const entrySchema = z.object({
     defaultBranch: z.string().min(1),
     commitSha: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
     archived: z.boolean(),
-  }).strict(),
+  }).passthrough(),
   package: z.object({
     name: nullableText,
     version: nullableText,
     description: nullableText,
     author: nullableText,
     license: nullableText,
-  }).strict(),
+  }).passthrough(),
   topics: z.array(z.string()),
   keywords: z.array(z.string()),
   stars: z.number().int().nonnegative(),
@@ -35,7 +35,7 @@ const entrySchema = z.object({
     ref: z.string().min(1),
     packageJsonPath: z.literal('package.json'),
     patchPath: z.string().nullable(),
-  }).strict(),
+  }).passthrough(),
   validation: z.object({
     status: z.enum(['valid', 'invalid', 'archived']),
     code: z.enum([
@@ -50,7 +50,7 @@ const entrySchema = z.object({
       'github-request-failed',
     ]),
     message: nullableText,
-  }).strict(),
+  }).passthrough(),
   compatibility: z.enum(['compatible', 'incompatible', 'unknown']),
   installability: z.enum(['browse-only', 'manual', 'one-click-eligible']),
   riskSignals: z.array(z.enum([
@@ -67,8 +67,8 @@ const entrySchema = z.object({
     upRecent: z.number().int().nonnegative(),
     downRecent: z.number().int().nonnegative(),
     commentId: z.number().int().positive(),
-  }).strict().nullable().optional(),
-}).strict()
+  }).passthrough().nullable().optional(),
+}).passthrough()
 
 const packEntrySchema = z.object({
   repositoryId: z.string().regex(/^\d+$/),
@@ -78,13 +78,13 @@ const packEntrySchema = z.object({
     defaultBranch: z.string().min(1),
     commitSha: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
     archived: z.boolean(),
-  }).strict(),
+  }).passthrough(),
   name: z.string().min(1),
   description: nullableText,
   items: z.array(z.object({
     fullName: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
     repositoryId: z.string().regex(/^\d+$/).nullable(),
-  }).strict()),
+  }).passthrough()),
   stars: z.number().int().nonnegative(),
   repositoryCreatedAt: isoDate,
   lastCodePushAt: isoDate,
@@ -100,8 +100,8 @@ const packEntrySchema = z.object({
       'github-request-failed',
     ]),
     message: nullableText,
-  }).strict(),
-}).strict()
+  }).passthrough(),
+}).passthrough()
 
 const catalogSchema = z.object({
   schemaVersion: z.literal(1),
@@ -111,18 +111,18 @@ const catalogSchema = z.object({
   integrity: z.object({
     algorithm: z.literal('sha256'),
     digest: z.string().regex(/^[0-9a-f]{64}$/),
-  }).strict(),
+  }).passthrough(),
   summary: z.object({
     entryCount: z.number().int().nonnegative(),
     invalidEntryCount: z.number().int().nonnegative(),
     packCount: z.number().int().nonnegative().optional(),
-  }).strict(),
+  }).passthrough(),
   entries: z.array(entrySchema),
   packs: z.array(packEntrySchema).optional(),
   ratings: z.object({
     issueUrl: z.url(),
-  }).strict().nullable().optional(),
-}).strict()
+  }).passthrough().nullable().optional(),
+}).passthrough()
 
 /** Stable catalog validation error suitable for mapping to a public error code. */
 export class MarketplaceCatalogParseError extends Error {

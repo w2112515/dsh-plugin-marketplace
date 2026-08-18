@@ -30,6 +30,8 @@ export {
   sealMarketplaceCatalog,
 } from './catalog.ts'
 
+export const DEFAULT_MARKETPLACE_CATALOG_URL = 'https://w2112515.github.io/dsh-plugin-marketplace/plugin-marketplace/catalog-v1.json'
+
 export const name = 'plugin-marketplace'
 /** Catalog API mounts on webServer alone. Agent tools wait for tools + systemPrompt. */
 export const inject = ['webServer']
@@ -44,7 +46,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  catalogUrl: z.string().default(''),
+  catalogUrl: z.string().default(DEFAULT_MARKETPLACE_CATALOG_URL),
   maxAgeMs: z.natural().min(1).default(48 * 60 * 60 * 1000),
   timeoutMs: z.natural().min(1).default(60_000),
   maxBytes: z.natural().min(1).default(15_000_000),
@@ -95,8 +97,17 @@ function verifySameOrigin(req: IncomingMessage): void {
   } catch {
     originUrl = null
   }
-  if (host === undefined || originUrl === null
-    || (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:')
+  const sameFetch = req.headers['sec-fetch-site'] === 'same-origin'
+  if (host === undefined) {
+    throw new ApiFailure(403, 'origin-denied', 'The marketplace API accepts only same-origin WebUI requests.')
+  }
+  if (originUrl === null) {
+    if (!sameFetch) {
+      throw new ApiFailure(403, 'origin-denied', 'The marketplace API accepts only same-origin WebUI requests.')
+    }
+    return
+  }
+  if ((originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:')
     || originUrl.host !== host) {
     throw new ApiFailure(403, 'origin-denied', 'The marketplace API accepts only same-origin WebUI requests.')
   }

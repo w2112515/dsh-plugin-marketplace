@@ -33,3 +33,4 @@ jobs:
             exit 1
           fi
       - run: pnpm pack --dry-run
+      - run: pnpm run check:catalog

@@ -128,7 +128,10 @@ The bundle's patch row id is `plugin-marketplace`. Override the full config in `
     maxAgeMs: 172800000
     timeoutMs: 60000
     maxBytes: 15000000
+    agentTools: true
 ```
+
+The catalog is a daily GitHub Pages snapshot. A plugin that landed on GitHub today appears after the next successful scan. A failed scan leaves the previous snapshot in place.
 
 ## Repository layout
 

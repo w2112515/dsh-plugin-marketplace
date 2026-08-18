@@ -1,6 +1,6 @@
 {
   "name": "@w2112515/dsh-plugin-marketplace",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Out-of-tree installable plugin marketplace bundle for DeepSeek Harness",
   "homepage": "https://github.com/w2112515/dsh-plugin-marketplace#readme",
   "repository": {
@@ -41,6 +41,7 @@
     "lib/**",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "dsh": {
@@ -62,7 +63,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "scan": "tsx scripts/plugin-marketplace-scan.ts",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build && node scripts/check-bundle-identity.mjs"
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && node scripts/check-bundle-identity.mjs",
+    "check:catalog": "node scripts/check-live-catalog.mjs"
   },
   "dependencies": {
     "execa": "^10.0.0",

@@ -128,7 +128,10 @@ bundle 插入的 row id 是 `plugin-marketplace`。可在 `$DSH_HOME/profiles/we
     maxAgeMs: 172800000
     timeoutMs: 60000
     maxBytes: 15000000
+    agentTools: true
 ```
+
+目录是 GitHub Pages 上的每日快照。今天刚出现在 GitHub 上的插件，要等下一次扫描成功才会进市场。扫描失败时继续用上一份快照。
 
 ## 仓库结构
 

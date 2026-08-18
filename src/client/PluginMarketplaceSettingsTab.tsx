@@ -588,6 +588,7 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const [profile, setProfile] = useState<MarketplaceOperationSnapshot | null>(null)
   const [view, setView] = useState<ViewKey>('discover')
   const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
   const [category, setCategory] = useState<CategoryFilter>('all')
   const [filter, setFilter] = useState<InstallFilter>('all')
   const [sort, setSort] = useState<SortKey>('recommended')
@@ -609,7 +610,11 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const [packReload, setPackReload] = useState(0)
   const bootstrapped = useRef(false)
   const rowNodes = useRef(new Map<string, HTMLButtonElement>())
-  const request = useMemo(() => requestFor(query, category, filter, sort, page), [query, category, filter, sort, page])
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setDebouncedQuery(query) }, 250)
+    return () => { window.clearTimeout(timer) }
+  }, [query])
+  const request = useMemo(() => requestFor(debouncedQuery, category, filter, sort, page), [debouncedQuery, category, filter, sort, page])
 
   useEffect(() => {
     let current = true
@@ -742,10 +747,17 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
   const visibleInstalled = sortInstalledItems(
     installedCategoryFilter === 'all' ? installedItems : installedItems.filter(item => installedCategory(item) === installedCategoryFilter),
     installedSort,
-  )
-  const visibleExternal = installedModel !== null && (installedCategoryFilter === 'all' || installedCategoryFilter === 'uncategorized')
+  ).filter(item => marketplaceTextsMatchQuery([
+    item.plugin?.name ?? '',
+    item.plugin?.description ?? '',
+    item.plugin?.publisher ?? '',
+    item.state.packageName ?? '',
+    item.state.installedRepository ?? '',
+  ], query))
+  const visibleExternal = (installedModel !== null && (installedCategoryFilter === 'all' || installedCategoryFilter === 'uncategorized')
     ? installedModel.external
     : []
+  ).filter(item => marketplaceTextsMatchQuery([item.packageName, item.installedSpec ?? ''], query))
   const anyRestartPending = (profile?.plugins ?? []).some(state => isRestartPending(state.state))
 
   return <div className={css.section} aria-busy={refreshing}>
@@ -777,11 +789,12 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
       {installedError ? <p className={css.inlineError} role="alert">{t('installed.error')}</p> : null}
       {installedModel === null && !installedError ? <p className={css.status}>{t('installed.loading')}</p> : null}
       {installedModel !== null ? <>
+        <label className={css.search}><IconSearchOutline16 aria-hidden="true" /><span className={css.visuallyHidden}>{t('search')}</span><input type="search" value={query} placeholder={t('search')} onChange={(event) => { setQuery(event.currentTarget.value) }} />{query.length > 0 ? <button className={css.clearSearch} type="button" aria-label={t('clearSearch')} onClick={() => { setQuery('') }}><IconCloseOutline16 size={12} aria-hidden="true" /></button> : null}</label>
         <div className={css.controls}>
           <div className={css.filterGroup} role="group" aria-label={t('category.label')}>{installedChips.map(chip => <button key={chip.value} type="button" className={css.filterButton} aria-pressed={installedCategoryFilter === chip.value} data-active={installedCategoryFilter === chip.value} onClick={() => { setInstalledCategoryFilter(chip.value) }}>{chip.label} <span className={css.filterCount}>{chip.count}</span></button>)}</div>
           <label className={css.sortControl}><span className={css.filterLabel}>{t('sort.label')}</span><select value={installedSort} onChange={(event) => { setInstalledSort(event.currentTarget.value as InstalledSort) }}><option value="updates">{t('installed.sort.updates')}</option><option value="name">{t('installed.sort.name')}</option><option value="updated">{t('installed.sort.updated')}</option></select></label>
         </div>
-        {visibleInstalled.length === 0 && visibleExternal.length === 0 ? <p className={css.status}>{t('installed.empty')}</p> : null}
+        {visibleInstalled.length === 0 && visibleExternal.length === 0 ? <p className={css.status}>{query ? t('state.emptySearch') : t('installed.empty')}</p> : null}
         {visibleInstalled.length > 0 ? <ul className={css.rows}>{visibleInstalled.map(item => <InstalledRow key={item.state.repositoryId ?? item.state.packageName} item={item} t={t} dateLocale={dateLocale} canInstall={canInstall} onOpen={openPlugin} onUpdate={installPlugin} onRemove={removePlugin} onConfigure={() => { activateTab('configurable') }} />)}</ul> : null}
         {visibleExternal.length > 0 ? <>
           <h4 className={css.externalHeading}>{t('installed.external')}</h4>

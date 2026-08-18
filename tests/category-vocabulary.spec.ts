@@ -22,6 +22,7 @@ describe('category vocabulary', () => {
     expect(marketplaceFieldMatchesWord('A build kit', 'ui')).toBe(false)
     expect(marketplaceFieldMatchesWord('dsh-ui-kit', 'ui')).toBe(true)
     expect(marketplaceFieldMatchesWord('DSH 本机安全审计', '安全')).toBe(true)
+    expect(marketplaceFieldMatchesWord('DSH 本机安全审计', '安')).toBe(false)
   })
 
   it('treats Discover pack chip labels as a hit for every pack', () => {

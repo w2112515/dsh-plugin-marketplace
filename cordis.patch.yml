@@ -6,3 +6,4 @@
         maxAgeMs: 172800000
         timeoutMs: 60000
         maxBytes: 15000000
+        agentTools: true

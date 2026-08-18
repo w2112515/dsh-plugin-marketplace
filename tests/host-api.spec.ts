@@ -180,5 +180,12 @@ describe('out-of-tree Host API', () => {
       method: 'list', params: request,
     }, 'https://attacker.example')
     expect(denied).toMatchObject({ status: 403, body: { ok: false, error: { code: 'origin-denied' } } })
+
+    const sameSite = await fetch(`${apiServer.origin}/api/plugin-marketplace`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' },
+      body: JSON.stringify({ method: 'list', params: request }),
+    })
+    expect(sameSite.status).toBe(200)
   })
 })

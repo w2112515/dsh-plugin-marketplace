@@ -230,16 +230,16 @@ export class MarketplaceCatalogClient {
       if (this.catalog === null) {
         throw new CatalogClientFailure('catalog-invalid', 'The catalog server returned not-modified without a saved catalog.')
       }
-      await this.commit({
+      this.source = 'network'
+      this.fetchedAt = fetchedAt
+      this.error = null
+      await this.persist({
         schemaVersion: CACHE_SCHEMA_VERSION,
         sourceUrl: this.options.sourceUrl,
         fetchedAt,
         etag: this.etag,
         catalog: this.catalog,
       })
-      this.source = 'network'
-      this.fetchedAt = fetchedAt
-      this.error = null
       return
     }
     if (!response.ok) {
@@ -253,28 +253,28 @@ export class MarketplaceCatalogClient {
       throw new CatalogClientFailure('catalog-invalid', 'The downloaded marketplace catalog is invalid.')
     }
     const nextEtag = response.headers.get('etag')
-    await this.commit({
+    this.catalog = catalog
+    this.source = 'network'
+    this.fetchedAt = fetchedAt
+    this.etag = nextEtag
+    this.error = null
+    await this.persist({
       schemaVersion: CACHE_SCHEMA_VERSION,
       sourceUrl: this.options.sourceUrl,
       fetchedAt,
       etag: nextEtag,
       catalog,
     })
-    this.catalog = catalog
-    this.source = 'network'
-    this.fetchedAt = fetchedAt
-    this.etag = nextEtag
-    this.error = null
   }
 
-  private async commit(record: MarketplaceCacheRecord): Promise<void> {
+  private async persist(record: MarketplaceCacheRecord): Promise<void> {
     try {
       await writeFileAtomic(this.options.cachePath, serializeCacheRecord(record), {
         mode: 0o600,
         dirMode: 0o700,
       })
     } catch {
-      throw new CatalogClientFailure('cache-write-failed', 'The refreshed marketplace catalog could not be saved.')
+      this.error = { code: 'cache-write-failed', message: 'The refreshed marketplace catalog could not be saved.' }
     }
   }
 

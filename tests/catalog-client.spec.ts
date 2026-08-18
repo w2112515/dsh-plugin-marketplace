@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -103,6 +103,20 @@ describe('MarketplaceCatalogClient', () => {
     })
     expect(failing).toHaveBeenCalledTimes(2)
     await exhausted.close()
+  })
+
+  it('keeps a valid catalog in memory when the cache file cannot be written', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-marketplace-'))
+    roots.push(root)
+    const blocker = join(root, 'cache')
+    await writeFile(blocker, 'not-a-directory')
+    const catalog = catalogFixture()
+    const client = new MarketplaceCatalogClient(options(join(blocker, 'catalog-v1.json'), async () => new Response(JSON.stringify(catalog))))
+    await client.initialize()
+    await expect(client.refresh()).resolves.toMatchObject({
+      status: 'ready', source: 'network', catalog, error: { code: 'cache-write-failed' },
+    })
+    await client.close()
   })
 
   it('preserves cache when a refresh returns invalid content', async () => {
