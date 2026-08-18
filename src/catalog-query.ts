@@ -1,5 +1,12 @@
 /** Host-owned search, filtering, ordering, and paging for the Marketplace catalog. */
 
+import {
+  MARKETPLACE_CATEGORY_PRIORITY,
+  MARKETPLACE_CATEGORY_VOCABULARY,
+  marketplaceFieldMatchesWord,
+  marketplaceQueryCategoryAlias,
+  marketplaceQueryWords,
+} from './category-vocabulary.ts'
 import type {
   MarketplaceCatalogEntry,
   MarketplaceCatalogView,
@@ -18,6 +25,8 @@ import type {
   MarketplacePluginSummary,
   MarketplaceProfilePluginState,
 } from './types.ts'
+
+export { MARKETPLACE_CATEGORY_PRIORITY } from './category-vocabulary.ts'
 
 export const MARKETPLACE_PAGE_SIZE = 50
 const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000
@@ -65,30 +74,6 @@ function recommendedScore(entry: MarketplaceCatalogEntry, nowMs: number): number
   return marketplaceFreshness(entry.lastCodePushAt, nowMs) * quality + boost
 }
 
-/** Fixed taxonomy priority: the first matching category wins, one chip per row. */
-export const MARKETPLACE_CATEGORY_PRIORITY: readonly MarketplaceCategory[] = [
-  'theme', 'memory', 'usage', 'skill', 'security', 'channel', 'ui', 'tool', 'provider',
-]
-
-/**
- * Conservative fallback tokens matched against whole words from topics, keywords,
- * and repository/package names. Precision beats recall: a wrong chip is worse
- * than an honest "uncategorized", so attributive product names (codex, claude,
- * openai — "Codex-style pet", "import Claude sessions") never classify.
- */
-const CATEGORY_TOKENS: Readonly<Record<MarketplaceCategory, readonly string[]>> = {
-  theme: ['theme', 'themes', 'skin', 'skins', 'color-scheme', 'colour-scheme', 'appearance'],
-  memory: ['memory', 'memories', 'rag', 'embedding', 'embeddings', 'vector', 'vectors', 'knowledge', 'recall'],
-  usage: ['usage', 'balance', 'billing', 'quota', 'cost', 'costs', 'metering', 'spend'],
-  skill: ['skill', 'skills'],
-  security: ['security', 'audit', 'audits', 'approval', 'approvals', 'sandbox', 'permission', 'permissions', 'policy'],
-  channel: ['feishu', 'lark', 'telegram', 'discord', 'wechat', 'dingtalk', 'slack', 'qq', 'qqbot'],
-  ui: ['ui', 'tui', 'gui', 'webui', 'sidebar', 'dashboard', 'panel', 'interface', 'layout', 'pet', 'pets', 'widget', 'widgets'],
-  tool: ['tool', 'tools', 'mcp', 'ocr', 'vision', 'terminal', 'cli', 'automation', 'notify', 'notification',
-    'workflow', 'workflows', 'scheduler', 'session', 'sessions'],
-  provider: ['provider', 'providers', 'openrouter', 'oauth'],
-}
-
 const CATEGORY_DECLARATION = /^dsh-category-([a-z-]+)$/u
 
 /**
@@ -116,7 +101,19 @@ export function deriveMarketplaceCategory(entry: MarketplaceCatalogEntry): Marke
   collect(entry.package.name ?? '')
   collect(entry.repository.fullName)
   for (const category of MARKETPLACE_CATEGORY_PRIORITY) {
-    if (CATEGORY_TOKENS[category].some(token => tokens.has(token))) return category
+    const vocab = MARKETPLACE_CATEGORY_VOCABULARY.find(item => item.slug === category)
+    if (vocab !== undefined && vocab.tokens.some(token => tokens.has(token))) return category
+  }
+  const haystack = [
+    ...entry.topics,
+    ...entry.keywords,
+    entry.package.name ?? '',
+    entry.repository.fullName,
+    entry.package.description ?? '',
+  ].join('\n').toLocaleLowerCase()
+  for (const category of MARKETPLACE_CATEGORY_PRIORITY) {
+    const vocab = MARKETPLACE_CATEGORY_VOCABULARY.find(item => item.slug === category)
+    if (vocab !== undefined && vocab.needles.some(needle => haystack.includes(needle))) return category
   }
   return null
 }
@@ -167,13 +164,10 @@ function summary(entry: MarketplaceCatalogEntry, nowMs: number, issueUrl: string
   }
 }
 
-function normalizedWords(query: string): readonly string[] {
-  return query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean)
-}
-
 function relevance(entry: MarketplaceCatalogEntry, words: readonly string[]): number {
   if (words.length === 0) return 0
   const publisher = entry.repository.fullName.split('/')[0] ?? ''
+  const category = deriveMarketplaceCategory(entry) ?? 'uncategorized'
   const fields: readonly [string, number][] = [
     [entry.package.name ?? '', 10],
     [entry.repository.fullName, 8],
@@ -185,12 +179,16 @@ function relevance(entry: MarketplaceCatalogEntry, words: readonly string[]): nu
   let score = 0
   for (const word of words) {
     let matched = false
+    const alias = marketplaceQueryCategoryAlias(word)
+    if (alias !== null && alias === category) {
+      score += 8
+      matched = true
+    }
     for (const [field, weight] of fields) {
-      const normalized = field.toLocaleLowerCase()
-      if (normalized === word) {
+      if (field.toLocaleLowerCase() === word) {
         score += weight * 2
         matched = true
-      } else if (normalized.includes(word)) {
+      } else if (marketplaceFieldMatchesWord(field, word)) {
         score += weight
         matched = true
       }
@@ -257,7 +255,7 @@ export function queryMarketplaceCatalog(
     uncategorized: categorized.filter(item => item.category === null).length,
     packs: (view.catalog?.packs ?? []).filter(isPublicMarketplacePack).length,
   }
-  const words = normalizedWords(request.query)
+  const words = marketplaceQueryWords(request.query)
   const selected = categorized
     .filter(item => request.category === 'all'
       || (request.category === 'uncategorized' ? item.category === null : item.category === request.category))

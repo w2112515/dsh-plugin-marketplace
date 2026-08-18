@@ -190,6 +190,46 @@ describe('catalog query', () => {
     expect(deriveMarketplaceCategory(entry(11, { keywords: ['claude'] }))).toBeNull()
     // Provider is the residual category: any concrete identity wins first.
     expect(deriveMarketplaceCategory(entry(12, { keywords: ['skills', 'openrouter'] }))).toBe('skill')
+    expect(deriveMarketplaceCategory(entry(13, {
+      package: { ...entry(13).package, description: 'DSH 本机安全审计插件' },
+    }))).toBe('security')
+  })
+
+  it('treats chip labels in both languages as category search aliases', () => {
+    const englishSecurity = entry(1, {
+      topics: ['dsh-plugin', 'security'],
+      keywords: ['dsh', 'policy'],
+      package: { ...entry(1).package, description: 'Policy layer for agent calls' },
+    })
+    const weather = entry(2, { package: { ...entry(2).package, description: 'Weather for teams' } })
+    const catalogView = view([englishSecurity, weather])
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, query: '安全' })
+      .items.map(item => item.repositoryId)).toEqual(['1'])
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, query: 'security' })
+      .items.map(item => item.repositoryId)).toEqual(['1'])
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, query: '安全插件' })
+      .items.map(item => item.repositoryId)).toEqual(['1'])
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, query: '安全 weather' }).items).toEqual([])
+  })
+
+  it('does not let a short ASCII query match inside another word', () => {
+    const builder = entry(1, {
+      keywords: ['dsh'],
+      package: { ...entry(1).package, name: '@acme/build-kit', description: 'A build kit for teams' },
+    })
+    const uiPlugin = entry(2, { topics: ['dsh-plugin', 'dsh-category-ui'] })
+    const catalogView = view([builder, uiPlugin])
+    expect(queryMarketplaceCatalog(catalogView, { ...defaultRequest, query: 'ui' })
+      .items.map(item => item.repositoryId)).toEqual(['2'])
+  })
+
+  it('treats the uncategorized chip label as a search alias', () => {
+    const plain = entry(1)
+    const themed = entry(2, { topics: ['dsh-plugin', 'dsh-category-theme'] })
+    expect(queryMarketplaceCatalog(view([plain, themed]), { ...defaultRequest, query: '未分类' })
+      .items.map(item => item.repositoryId)).toEqual(['1'])
+    expect(queryMarketplaceCatalog(view([plain, themed]), { ...defaultRequest, query: 'uncategorized' })
+      .items.map(item => item.repositoryId)).toEqual(['1'])
   })
 
   it('filters by category and reports per-category counts before the segment', () => {

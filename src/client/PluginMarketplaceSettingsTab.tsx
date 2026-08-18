@@ -17,6 +17,7 @@ import type {
 } from './marketplace-adapter.ts'
 import type { MarketplaceExternalPlugin, MarketplaceInstalledResponse, MarketplacePackDetailResponse, MarketplacePackListResponse } from '../types.ts'
 import { MARKETPLACE_CATEGORY_PRIORITY } from '../catalog-query.ts'
+import { marketplaceTextsMatchQuery } from '../category-vocabulary.ts'
 import type { PluginMarketplaceLocaleKey } from './locales.ts'
 import css from './PluginMarketplaceSettingsTab.module.css'
 
@@ -444,9 +445,11 @@ function packCompositionLine(pack: MarketplacePackSummary, t: Translate): string
 }
 
 function PackListView({ packs, query, t, onOpen }: { packs: readonly MarketplacePackSummary[]; query: string; t: Translate; onOpen: (id: string) => void }): ReactNode {
-  const words = query.trim().toLowerCase()
-  const visible = words.length === 0 ? packs : packs.filter(pack => [pack.name, pack.publisher, pack.repositoryFullName, pack.description ?? '']
-    .some(text => text.toLowerCase().includes(words)))
+  const visible = packs.filter(pack => marketplaceTextsMatchQuery(
+    [pack.name, pack.publisher, pack.repositoryFullName, pack.description ?? ''],
+    query,
+    { packs: true },
+  ))
   if (visible.length === 0) return <p className={css.status}>{t('state.emptySearch')}</p>
   return <div className={css.packGrid}>{visible.map(pack => <button key={pack.repositoryId} type="button" className={css.packCard} onClick={() => { onOpen(pack.repositoryId) }}>
     <span className={css.rowHeading}>

@@ -1,21 +1,14 @@
 /** Copy dictionaries for the read-only plugin Marketplace Settings tab. */
 
+import { marketplaceCategoryLocaleEntries } from '../category-vocabulary.ts'
+
 /** Simplified Chinese dictionary and key source of truth. */
 export const zh = {
   tab: '插件市场',
   'view.discover': '发现',
   'view.installed': '已安装',
   'category.label': '分类',
-  'category.theme': '主题',
-  'category.ui': '界面',
-  'category.tool': '工具',
-  'category.memory': '记忆',
-  'category.provider': '模型接入',
-  'category.usage': '用量',
-  'category.skill': '技能',
-  'category.security': '安全',
-  'category.channel': '消息渠道',
-  'category.uncategorized': '未分类',
+  ...marketplaceCategoryLocaleEntries('zh'),
   'installed.loading': '正在读取已安装列表…',
   'installed.error': '无法读取已安装列表，请切换分页重试。',
   'installed.empty': '当前 profile 尚未安装目录中的插件。',
@@ -194,16 +187,7 @@ export const en = {
   'view.discover': 'Discover',
   'view.installed': 'Installed',
   'category.label': 'Category',
-  'category.theme': 'Themes',
-  'category.ui': 'UI',
-  'category.tool': 'Tools',
-  'category.memory': 'Memory',
-  'category.provider': 'Providers',
-  'category.usage': 'Usage',
-  'category.skill': 'Skills',
-  'category.security': 'Security',
-  'category.channel': 'Channels',
-  'category.uncategorized': 'Uncategorized',
+  ...marketplaceCategoryLocaleEntries('en'),
   'installed.loading': 'Loading installed plugins…',
   'installed.error': 'The installed list could not be read. Switch views to retry.',
   'installed.empty': 'No catalog plugins are installed in this profile yet.',
