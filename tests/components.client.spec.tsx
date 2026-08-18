@@ -352,9 +352,16 @@ describe('PluginMarketplaceSettingsTab', () => {
       error: { code: 'network-error' as const, message: 'offline', retryable: true },
     }
     const bootstrap = vi.fn(async () => ({ list: unavailable, operations: operationSnapshot }))
-    renderTab({ bootstrap })
+    renderTab({
+      bootstrap,
+      refresh: vi.fn(async () => ({
+        changed: false, list: null, source: 'none' as const, stale: false,
+        lastSuccessfulFetchAt: null, error: unavailable.error,
+      })),
+    })
 
     await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getByText('offline')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(2))
   })

@@ -81,6 +81,30 @@ describe('MarketplaceCatalogClient', () => {
     await client.close()
   })
 
+  it('retries a transient network failure once, then keeps the last error', async () => {
+    const path = await cachePath()
+    const catalog = catalogFixture()
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(new Response(JSON.stringify(catalog)))
+    const recovered = new MarketplaceCatalogClient(options(path, fetchImpl))
+    await recovered.initialize()
+    await expect(recovered.refresh()).resolves.toMatchObject({ status: 'ready', source: 'network', catalog, error: null })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    await recovered.close()
+
+    const failing = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('still offline'))
+    const exhausted = new MarketplaceCatalogClient(options(path, failing))
+    await exhausted.initialize()
+    await expect(exhausted.refresh()).resolves.toMatchObject({
+      status: 'ready', source: 'cache', catalog, error: { code: 'network-error' },
+    })
+    expect(failing).toHaveBeenCalledTimes(2)
+    await exhausted.close()
+  })
+
   it('preserves cache when a refresh returns invalid content', async () => {
     const path = await cachePath()
     const catalog = catalogFixture()

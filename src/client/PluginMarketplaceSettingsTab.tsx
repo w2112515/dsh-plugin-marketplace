@@ -707,11 +707,12 @@ export function PluginMarketplaceSettingsTab({ bootstrap, list, detail, refresh,
     return <div className={css.section}><button className={css.backButton} type="button" onClick={backToList}><IconChevronLeftOutline14 aria-hidden="true" />{t('detail.back')}</button><p className={css.status} aria-live="polite">{detailState.status === 'loading' ? t('detail.loading') : t('detail.error')}</p></div>
   }
   if (model === null) {
-    if (error) return <div className={css.section}><div className={css.failure}><p role="alert">{t('state.error.title')}</p><p className={css.failureDetail}>{t('state.error.detail')}</p><button type="button" onClick={retryBootstrap}>{t('state.retry')}</button></div></div>
+    if (error) return <div className={css.section}><div className={css.failure}><p role="alert">{t('state.error.title')}</p><p className={css.failureDetail}>{t('state.error.detail')}</p><p className={css.failureDetail}>{error}</p><button type="button" onClick={retryBootstrap}>{t('state.retry')}</button></div></div>
     return <div className={css.section} aria-busy="true"><p className={css.status}>{t('state.loading')}</p><div className={css.skeletonList} aria-hidden="true"><div /><div /><div /></div></div>
   }
   if (model.catalogStatus === 'unavailable' && model.items.length === 0) {
-    return <div className={css.section}><div className={css.failure}><p role="alert">{t('state.error.title')}</p><p className={css.failureDetail}>{t('state.error.detail')}</p><button type="button" onClick={retryBootstrap}>{t('state.retry')}</button></div></div>
+    const failureReason = error ?? model.error?.message ?? null
+    return <div className={css.section}><div className={css.failure}><p role="alert">{t('state.error.title')}</p><p className={css.failureDetail}>{t('state.error.detail')}</p>{failureReason ? <p className={css.failureDetail}>{failureReason}</p> : null}<button type="button" onClick={retryBootstrap}>{t('state.retry')}</button></div></div>
   }
   const freshnessAt = model.lastSuccessfulFetchAt ?? model.generatedAt
   const canInstall = canChangeProfile(profile)

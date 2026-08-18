@@ -1,6 +1,6 @@
 {
   "name": "@w2112515/dsh-plugin-marketplace",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Out-of-tree installable plugin marketplace bundle for DeepSeek Harness",
   "homepage": "https://github.com/w2112515/dsh-plugin-marketplace#readme",
   "repository": {

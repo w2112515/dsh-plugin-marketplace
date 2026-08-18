@@ -31,7 +31,8 @@ export {
 } from './catalog.ts'
 
 export const name = 'plugin-marketplace'
-export const inject = ['webServer', 'tools', 'systemPrompt']
+/** Catalog API mounts on webServer alone. Agent tools wait for tools + systemPrompt. */
+export const inject = ['webServer']
 
 export interface Config {
   readonly catalogUrl: string
@@ -45,7 +46,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   catalogUrl: z.string().default(''),
   maxAgeMs: z.natural().min(1).default(48 * 60 * 60 * 1000),
-  timeoutMs: z.natural().min(1).default(15_000),
+  timeoutMs: z.natural().min(1).default(60_000),
   maxBytes: z.natural().min(1).default(15_000_000),
   agentTools: z.boolean().default(true),
 })
@@ -262,10 +263,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => disposeRoute, 'plugin-marketplace.api')
 
   if (config.agentTools) {
-    applyMarketplaceAgentTools(ctx, {
-      catalog: () => catalog.view(),
-      operations,
-      capabilities,
+    ctx.inject(['tools', 'systemPrompt'], (agentCtx) => {
+      applyMarketplaceAgentTools(agentCtx, {
+        catalog: () => catalog.view(),
+        operations,
+        capabilities,
+      })
     })
   }
   ctx.effect(() => async () => {

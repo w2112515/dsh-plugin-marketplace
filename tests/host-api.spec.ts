@@ -89,6 +89,9 @@ describe('out-of-tree Host API', () => {
           return () => undefined
         },
       },
+      inject(_deps: readonly string[], factory: (inner: unknown) => unknown) {
+        return factory(ctx)
+      },
       effect(factory: () => unknown) {
         const result = factory()
         if (typeof result === 'function') disposers.push(result as () => void | Promise<void>)

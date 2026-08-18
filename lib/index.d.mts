@@ -4,6 +4,7 @@ import z from "@deepseek-ai/schemastery";
 import { Context } from "@deepseek-ai/cordis";
 //#region src/index.d.ts
 declare const name = "plugin-marketplace";
+/** Catalog API mounts on webServer alone. Agent tools wait for tools + systemPrompt. */
 declare const inject: string[];
 interface Config {
   readonly catalogUrl: string;

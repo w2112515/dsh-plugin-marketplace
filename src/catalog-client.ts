@@ -189,67 +189,82 @@ export class MarketplaceCatalogClient {
   }
 
   private async refreshOnce(): Promise<MarketplaceCatalogView> {
-    try {
-      if (this.options.sourceUrl.trim().length === 0) {
-        throw new CatalogClientFailure(
-          'catalog-url-unconfigured',
-          'The marketplace catalog URL is not configured.',
-        )
-      }
-      const timeout = AbortSignal.timeout(this.options.timeoutMs)
-      const headers: Record<string, string> = {
-        accept: 'application/json',
-        'user-agent': 'deepseek-harness-plugin-marketplace',
-      }
-      if (this.etag !== null) headers['if-none-match'] = this.etag
-      const response = await this.fetchImpl(this.options.sourceUrl, {
-        headers,
-        signal: AbortSignal.any([timeout, this.closeController.signal]),
-      })
-      const fetchedAt = this.now().toISOString()
-      if (response.status === 304) {
-        if (this.catalog === null) {
-          throw new CatalogClientFailure('catalog-invalid', 'The catalog server returned not-modified without a saved catalog.')
-        }
-        await this.commit({
-          schemaVersion: CACHE_SCHEMA_VERSION,
-          sourceUrl: this.options.sourceUrl,
-          fetchedAt,
-          etag: this.etag,
-          catalog: this.catalog,
-        })
-        this.source = 'network'
-        this.fetchedAt = fetchedAt
-        this.error = null
-        return this.view()
-      }
-      if (!response.ok) {
-        throw new CatalogClientFailure('http-error', `The marketplace catalog server returned HTTP ${String(response.status)}.`)
-      }
-      let catalog: MarketplaceCatalogSnapshot
+    const attempts = 2
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        catalog = parseMarketplaceCatalogText(await readBoundedText(response, this.options.maxBytes))
+        await this.pull()
+        return this.view()
       } catch (error) {
-        if (error instanceof CatalogClientFailure) throw error
-        throw new CatalogClientFailure('catalog-invalid', 'The downloaded marketplace catalog is invalid.')
+        const failure = publicError(error)
+        const retry = !this.disposed
+          && attempt < attempts
+          && (failure.code === 'network-error' || failure.code === 'http-error')
+        if (!retry) {
+          this.error = failure
+          return this.view()
+        }
       }
-      const nextEtag = response.headers.get('etag')
+    }
+    return this.view()
+  }
+
+  private async pull(): Promise<void> {
+    if (this.options.sourceUrl.trim().length === 0) {
+      throw new CatalogClientFailure(
+        'catalog-url-unconfigured',
+        'The marketplace catalog URL is not configured.',
+      )
+    }
+    const timeout = AbortSignal.timeout(this.options.timeoutMs)
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      'user-agent': 'deepseek-harness-plugin-marketplace',
+    }
+    if (this.etag !== null) headers['if-none-match'] = this.etag
+    const response = await this.fetchImpl(this.options.sourceUrl, {
+      headers,
+      signal: AbortSignal.any([timeout, this.closeController.signal]),
+    })
+    const fetchedAt = this.now().toISOString()
+    if (response.status === 304) {
+      if (this.catalog === null) {
+        throw new CatalogClientFailure('catalog-invalid', 'The catalog server returned not-modified without a saved catalog.')
+      }
       await this.commit({
         schemaVersion: CACHE_SCHEMA_VERSION,
         sourceUrl: this.options.sourceUrl,
         fetchedAt,
-        etag: nextEtag,
-        catalog,
+        etag: this.etag,
+        catalog: this.catalog,
       })
-      this.catalog = catalog
       this.source = 'network'
       this.fetchedAt = fetchedAt
-      this.etag = nextEtag
       this.error = null
-    } catch (error) {
-      this.error = publicError(error)
+      return
     }
-    return this.view()
+    if (!response.ok) {
+      throw new CatalogClientFailure('http-error', `The marketplace catalog server returned HTTP ${String(response.status)}.`)
+    }
+    let catalog: MarketplaceCatalogSnapshot
+    try {
+      catalog = parseMarketplaceCatalogText(await readBoundedText(response, this.options.maxBytes))
+    } catch (error) {
+      if (error instanceof CatalogClientFailure) throw error
+      throw new CatalogClientFailure('catalog-invalid', 'The downloaded marketplace catalog is invalid.')
+    }
+    const nextEtag = response.headers.get('etag')
+    await this.commit({
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      sourceUrl: this.options.sourceUrl,
+      fetchedAt,
+      etag: nextEtag,
+      catalog,
+    })
+    this.catalog = catalog
+    this.source = 'network'
+    this.fetchedAt = fetchedAt
+    this.etag = nextEtag
+    this.error = null
   }
 
   private async commit(record: MarketplaceCacheRecord): Promise<void> {
